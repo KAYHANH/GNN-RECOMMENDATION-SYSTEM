@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+import json
+import pickle
 
 import numpy as np
 import pandas as pd
@@ -18,24 +20,42 @@ try:
 except ImportError:  # pragma: no cover - optional at inspection time
     SentenceTransformer = None
 
+try:
+    from sklearn.decomposition import TruncatedSVD
+    from sklearn.feature_extraction.text import TfidfVectorizer
+except ImportError:  # pragma: no cover - optional at inspection time
+    TruncatedSVD = None
+    TfidfVectorizer = None
+
+
+SEMANTIC_BACKEND_METADATA = "semantic_backend.json"
+SEMANTIC_VECTORIZER_ARTIFACT = "semantic_vectorizer.pkl"
+SEMANTIC_PROJECTOR_ARTIFACT = "semantic_projector.pkl"
+
 
 class SemanticEngine:
     def __init__(
         self,
         *,
         model_name: str = "all-MiniLM-L6-v2",
+        backend: str = "sentence-transformer",
         model: Any | None = None,
         index: Any | None = None,
         article_ids: list[str] | None = None,
         articles_df: pd.DataFrame | None = None,
         normalize: bool = True,
+        vectorizer: Any | None = None,
+        projector: Any | None = None,
     ) -> None:
         self.model_name = model_name
+        self.backend = backend
         self.model = model
         self.index = index
         self.article_ids = article_ids or []
         self.articles_df = articles_df.copy() if articles_df is not None else None
         self.normalize = normalize
+        self.vectorizer = vectorizer
+        self.projector = projector
 
         if self.articles_df is not None and "article_id" in self.articles_df.columns:
             self.articles_df["article_id"] = self.articles_df["article_id"].astype(str).str.zfill(10)
@@ -52,6 +72,10 @@ class SemanticEngine:
         if faiss is None:
             raise ImportError("faiss-cpu is required to load semantic search artifacts.")
 
+        index_path = Path(index_path)
+        article_ids_path = Path(article_ids_path)
+        artifact_dir = index_path.parent
+
         index = faiss.read_index(str(index_path))
 
         if str(article_ids_path).lower().endswith(".csv"):
@@ -60,27 +84,109 @@ class SemanticEngine:
             article_ids = np.load(article_ids_path, allow_pickle=True).astype(str).tolist()
 
         articles_df = pd.read_csv(articles_path, dtype={"article_id": str}) if articles_path else None
+
+        backend = "sentence-transformer"
+        resolved_model_name = model_name
+        metadata_path = artifact_dir / SEMANTIC_BACKEND_METADATA
+        if metadata_path.exists():
+            with open(metadata_path, "r", encoding="utf-8") as handle:
+                metadata = json.load(handle)
+            backend = str(metadata.get("backend", backend))
+            resolved_model_name = str(metadata.get("model_name", resolved_model_name))
+        elif (artifact_dir / SEMANTIC_VECTORIZER_ARTIFACT).exists():
+            backend = "tfidf-svd"
+
+        vectorizer = None
+        projector = None
+        if backend == "tfidf-svd":
+            with open(artifact_dir / SEMANTIC_VECTORIZER_ARTIFACT, "rb") as handle:
+                vectorizer = pickle.load(handle)
+
+            projector_path = artifact_dir / SEMANTIC_PROJECTOR_ARTIFACT
+            if projector_path.exists():
+                with open(projector_path, "rb") as handle:
+                    projector = pickle.load(handle)
+
         return cls(
-            model_name=model_name,
+            model_name=resolved_model_name,
+            backend=backend,
             index=index,
             article_ids=article_ids,
             articles_df=articles_df,
+            vectorizer=vectorizer,
+            projector=projector,
         )
 
     def _get_model(self) -> Any:
+        if self.backend != "sentence-transformer":
+            return None
+
         if self.model is None:
             if SentenceTransformer is None:
                 raise ImportError("sentence-transformers is required to encode text queries.")
             self.model = SentenceTransformer(self.model_name)
         return self.model
 
-    def encode(self, texts: list[str]) -> np.ndarray:
+    def _encode_sentence_transformer(self, texts: list[str]) -> np.ndarray:
         model = self._get_model()
+        if model is None:
+            raise ValueError("SentenceTransformer backend is not available.")
         embeddings = model.encode(texts, convert_to_numpy=True).astype("float32")
+        return self._normalize_embeddings(embeddings)
+
+    def _encode_tfidf(self, texts: list[str]) -> np.ndarray:
+        if self.vectorizer is None:
+            raise ValueError("TF-IDF vectorizer is not loaded.")
+
+        matrix = self.vectorizer.transform(texts)
+        if self.projector is not None:
+            embeddings = self.projector.transform(matrix).astype("float32")
+        else:
+            embeddings = matrix.astype("float32").toarray()
+        return self._normalize_embeddings(embeddings)
+
+    def encode(self, texts: list[str]) -> np.ndarray:
+        if self.backend == "tfidf-svd":
+            return self._encode_tfidf(texts)
+        return self._encode_sentence_transformer(texts)
+
+    def _normalize_embeddings(self, embeddings: np.ndarray) -> np.ndarray:
+        embeddings = embeddings.astype("float32")
         if self.normalize:
             norms = np.linalg.norm(embeddings, axis=1, keepdims=True) + 1e-12
             embeddings = embeddings / norms
         return embeddings
+
+    def fit_tfidf_encoder(
+        self,
+        texts: list[str],
+        *,
+        max_features: int = 4096,
+        n_components: int = 256,
+    ) -> np.ndarray:
+        if TfidfVectorizer is None:
+            raise ImportError("scikit-learn is required to build the TF-IDF semantic backend.")
+
+        self.backend = "tfidf-svd"
+        self.vectorizer = TfidfVectorizer(
+            max_features=max_features,
+            ngram_range=(1, 2),
+            stop_words="english",
+        )
+        matrix = self.vectorizer.fit_transform(texts)
+
+        if TruncatedSVD is None:
+            raise ImportError("scikit-learn is required to build the TF-IDF semantic backend.")
+
+        max_components = min(n_components, max(1, matrix.shape[1] - 1))
+        if max_components >= 2:
+            self.projector = TruncatedSVD(n_components=max_components, random_state=42)
+            embeddings = self.projector.fit_transform(matrix).astype("float32")
+        else:
+            self.projector = None
+            embeddings = matrix.astype("float32").toarray()
+
+        return self._normalize_embeddings(embeddings)
 
     def build_index(
         self,
@@ -94,7 +200,13 @@ class SemanticEngine:
 
         frame = articles_df.copy()
         frame[article_id_column] = frame[article_id_column].astype(str).str.zfill(10)
-        embeddings = self.encode(frame[text_column].fillna("").astype(str).tolist())
+        texts = frame[text_column].fillna("").astype(str).tolist()
+
+        if self.backend == "tfidf-svd":
+            embeddings = self.fit_tfidf_encoder(texts)
+        else:
+            embeddings = self.encode(texts)
+
         index = faiss.IndexFlatIP(embeddings.shape[1])
         index.add(embeddings)
 

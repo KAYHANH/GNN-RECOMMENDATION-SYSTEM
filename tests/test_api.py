@@ -62,6 +62,26 @@ class FashionApiTests(unittest.TestCase):
         self.assertLessEqual(len(payload["results"]), 2)
         self.assertIn("meta", payload)
 
+    def test_discover_endpoint_returns_anchor_and_related_products(self) -> None:
+        response = self.client.get("/discover?q=black%20dress&k=3&mode=hybrid")
+        self.assertEqual(response.status_code, 200)
+
+        payload = response.json()
+        self.assertEqual(payload["query"], "black dress")
+        self.assertEqual(payload["mode"], "hybrid")
+        self.assertIn("recommendations", payload)
+        self.assertIn("meta", payload)
+
+    def test_related_endpoint_returns_recommendations_for_article(self) -> None:
+        response = self.client.get("/related/0926246001?k=3&mode=semantic")
+        self.assertEqual(response.status_code, 200)
+
+        payload = response.json()
+        self.assertEqual(payload["anchor_article_id"], "0926246001")
+        self.assertEqual(payload["mode"], "semantic")
+        self.assertIn("recommendations", payload)
+        self.assertIn("meta", payload)
+
     def test_catalog_image_returns_not_found_without_downloaded_images(self) -> None:
         response = self.client.get("/catalog/images/0926246001")
         self.assertEqual(response.status_code, 404)
@@ -73,6 +93,16 @@ class FashionApiTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["customer_id"], "demo-customer")
         self.assertEqual(payload["article_id"], "0926246001")
+        self.assertGreaterEqual(len(payload["reasons"]), 1)
+        self.assertIn("meta", payload)
+
+    def test_related_explain_endpoint_returns_reasons(self) -> None:
+        response = self.client.get("/explain-related/0926246001/0496762004")
+        self.assertEqual(response.status_code, 200)
+
+        payload = response.json()
+        self.assertEqual(payload["anchor_article_id"], "0926246001")
+        self.assertEqual(payload["article_id"], "0496762004")
         self.assertGreaterEqual(len(payload["reasons"]), 1)
         self.assertIn("meta", payload)
 

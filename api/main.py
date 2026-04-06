@@ -15,8 +15,11 @@ from api.app.dependencies import get_app_settings, get_recommender_service
 from api.app.observability import configure_logging
 from api.app.schemas import (
     ApiInfo,
+    DiscoverResponse,
     ExplainResponse,
     HealthResponse,
+    RelatedExplainResponse,
+    RelatedResponse,
     RecommendationMode,
     RecommendationResponse,
     ResponseMeta,
@@ -172,6 +175,43 @@ async def search(
     )
 
 
+@app.get("/discover", response_model=DiscoverResponse, tags=["Discovery"])
+async def discover(
+    q: Annotated[str, Query(min_length=1)],
+    k: Annotated[int, Query(ge=1, le=100)] = 12,
+    mode: RecommendationMode = RecommendationMode.HYBRID,
+    app_settings: Annotated[Settings, Depends(get_app_settings)] = None,
+    service: Annotated[RecommenderService, Depends(get_recommender_service)] = None,
+) -> DiscoverResponse:
+    payload = service.discover(query=q, k=k, mode=mode.value)
+    return DiscoverResponse(
+        query=q,
+        anchor=payload["anchor"],
+        mode=mode,
+        recommendations=payload["recommendations"],
+        meta=build_response_meta(app_settings, service),
+    )
+
+
+@app.get("/related/{article_id}", response_model=RelatedResponse, tags=["Discovery"])
+async def related(
+    article_id: str,
+    k: Annotated[int, Query(ge=1, le=100)] = 12,
+    mode: RecommendationMode = RecommendationMode.HYBRID,
+    app_settings: Annotated[Settings, Depends(get_app_settings)] = None,
+    service: Annotated[RecommenderService, Depends(get_recommender_service)] = None,
+) -> RelatedResponse:
+    anchor = service.get_article(article_id)
+
+    return RelatedResponse(
+        anchor_article_id=article_id,
+        anchor=anchor,
+        mode=mode,
+        recommendations=service.related(article_id=article_id, k=k, mode=mode.value),
+        meta=build_response_meta(app_settings, service),
+    )
+
+
 @app.get("/explain/{customer_id}/{article_id}", response_model=ExplainResponse, tags=["Explainability"])
 async def explain(
     customer_id: str,
@@ -184,5 +224,20 @@ async def explain(
         customer_id=customer_id,
         article_id=article_id,
         reasons=reasons,
+        meta=build_response_meta(app_settings, service),
+    )
+
+
+@app.get("/explain-related/{anchor_article_id}/{article_id}", response_model=RelatedExplainResponse, tags=["Explainability"])
+async def explain_related(
+    anchor_article_id: str,
+    article_id: str,
+    app_settings: Annotated[Settings, Depends(get_app_settings)] = None,
+    service: Annotated[RecommenderService, Depends(get_recommender_service)] = None,
+) -> RelatedExplainResponse:
+    return RelatedExplainResponse(
+        anchor_article_id=anchor_article_id,
+        article_id=article_id,
+        reasons=service.explain_related(anchor_article_id=anchor_article_id, article_id=article_id),
         meta=build_response_meta(app_settings, service),
     )

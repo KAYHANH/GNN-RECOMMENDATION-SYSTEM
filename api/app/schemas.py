@@ -101,3 +101,26 @@ class ExplainResponse(BaseModel):
     article_id: str
     reasons: list[str]
     meta: ResponseMeta
+
+
+class RelatedResponse(BaseModel):
+    anchor_article_id: str
+    anchor: RecommendationItem | None = None
+    mode: RecommendationMode
+    recommendations: list[RecommendationItem]
+    meta: ResponseMeta
+
+
+class DiscoverResponse(BaseModel):
+    query: str
+    anchor: RecommendationItem | None = None
+    mode: RecommendationMode
+    recommendations: list[RecommendationItem]
+    meta: ResponseMeta
+
+
+class RelatedExplainResponse(BaseModel):
+    anchor_article_id: str
+    article_id: str
+    reasons: list[str]
+    meta: ResponseMeta

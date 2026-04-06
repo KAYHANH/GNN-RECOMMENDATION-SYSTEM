@@ -20,6 +20,31 @@ except ImportError as exc:  # pragma: no cover - optional at inspection time
     raise ImportError("torch is required to run train_gnn.py") from exc
 
 
+def sample_triplet_matrix(
+    train_df,
+    *,
+    user_mapping: dict[str, int],
+    item_mapping: dict[str, int],
+    samples_per_user: int,
+    seed: int,
+) -> np.ndarray:
+    triplets = list(
+        sample_bpr_triplets(
+            train_df,
+            user_mapping=user_mapping,
+            item_mapping=item_mapping,
+            num_items=len(item_mapping),
+            samples_per_user=samples_per_user,
+            seed=seed,
+        )
+    )
+
+    if not triplets:
+        raise ValueError("No BPR triplets were generated. Check the prepared transactions and mappings.")
+
+    return np.asarray(triplets, dtype=np.int64)
+
+
 def main() -> None:
     parser = ArgumentParser(description="Train LightGCN with BPR loss for fashion recommendation.")
     parser.add_argument("--transactions", required=True)
@@ -33,6 +58,8 @@ def main() -> None:
     parser.add_argument("--test-weeks", type=int, default=4)
     parser.add_argument("--test-days", type=int, default=None)
     parser.add_argument("--samples-per-user", type=int, default=2)
+    parser.add_argument("--batch-size", type=int, default=8192)
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
     articles_df = load_articles(args.articles)
@@ -63,30 +90,43 @@ def main() -> None:
                 "lr": args.lr,
                 "weight_decay": args.weight_decay,
                 "loss": "bpr",
+                "batch_size": args.batch_size,
+                "samples_per_user": args.samples_per_user,
+                "seed": args.seed,
             }
         )
 
     try:
         for epoch in range(1, args.epochs + 1):
+            triplets = sample_triplet_matrix(
+                train_df,
+                user_mapping=user_mapping,
+                item_mapping=item_mapping,
+                samples_per_user=args.samples_per_user,
+                seed=args.seed + epoch,
+            )
+
+            rng = np.random.default_rng(args.seed + epoch)
+            rng.shuffle(triplets)
+
             model.train()
             epoch_loss = 0.0
             batch_count = 0
 
-            for user_idx, pos_idx, neg_idx in sample_bpr_triplets(
-                train_df,
-                user_mapping=user_mapping,
-                item_mapping=item_mapping,
-                num_items=len(item_mapping),
-                samples_per_user=args.samples_per_user,
-            ):
+            for start_idx in range(0, len(triplets), args.batch_size):
+                batch = triplets[start_idx : start_idx + args.batch_size]
+                user_indices = torch.as_tensor(batch[:, 0], dtype=torch.long, device=device)
+                pos_indices = torch.as_tensor(batch[:, 1], dtype=torch.long, device=device)
+                neg_indices = torch.as_tensor(batch[:, 2], dtype=torch.long, device=device)
+
                 optimizer.zero_grad()
                 user_embeddings, item_embeddings = model.split_embeddings(edge_index)
-
-                user_batch = user_embeddings[torch.tensor([user_idx], dtype=torch.long, device=device)]
-                pos_batch = item_embeddings[torch.tensor([pos_idx], dtype=torch.long, device=device)]
-                neg_batch = item_embeddings[torch.tensor([neg_idx], dtype=torch.long, device=device)]
-
-                loss = bpr_loss(user_batch, pos_batch, neg_batch, reg=args.weight_decay)
+                loss = bpr_loss(
+                    user_embeddings[user_indices],
+                    item_embeddings[pos_indices],
+                    item_embeddings[neg_indices],
+                    reg=args.weight_decay,
+                )
                 loss.backward()
                 optimizer.step()
 
@@ -94,9 +134,13 @@ def main() -> None:
                 batch_count += 1
 
             mean_loss = epoch_loss / max(batch_count, 1)
-            print(f"epoch={epoch} loss={mean_loss:.6f}")
+            print(
+                f"epoch={epoch} loss={mean_loss:.6f} batches={batch_count} "
+                f"triplets={len(triplets)} batch_size={args.batch_size}"
+            )
             if mlflow:
                 mlflow.log_metric("loss", mean_loss, step=epoch)
+                mlflow.log_metric("triplets_per_epoch", len(triplets), step=epoch)
 
         model.eval()
         with torch.no_grad():
@@ -107,7 +151,7 @@ def main() -> None:
 
         np.save(output_dir / "user_embeddings.npy", user_embeddings.cpu().numpy())
         np.save(output_dir / "item_embeddings.npy", item_embeddings.cpu().numpy())
-        articles_df[["article_id"]].drop_duplicates().to_csv(output_dir / "article_ids.csv", index=False)
+        articles_df[["article_id"]].drop_duplicates().to_csv(output_dir / "gnn_article_ids.csv", index=False)
 
         with open(output_dir / "user_mapping.json", "w", encoding="utf-8") as handle:
             json.dump(user_mapping, handle, indent=2)
@@ -120,7 +164,7 @@ def main() -> None:
         if mlflow:
             mlflow.log_artifact(str(output_dir / "user_mapping.json"))
             mlflow.log_artifact(str(output_dir / "item_mapping.json"))
-            mlflow.log_artifact(str(output_dir / "article_ids.csv"))
+            mlflow.log_artifact(str(output_dir / "gnn_article_ids.csv"))
     finally:
         if run_context is not None:
             mlflow.end_run()

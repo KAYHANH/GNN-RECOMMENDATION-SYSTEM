@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -262,6 +263,180 @@ class RecommenderService:
 
         return None
 
+    def _candidate_to_dict(self, candidate: RecommendationCandidate) -> dict[str, Any]:
+        payload = asdict(candidate)
+        catalog_metadata = self._catalog_lookup(candidate.article_id)
+        merged_metadata = {
+            **catalog_metadata,
+            **payload.get("metadata", {}),
+        }
+        payload["metadata"] = merged_metadata
+        return payload
+
+    def get_article(self, article_id: str) -> dict[str, Any] | None:
+        metadata = self._catalog_lookup(article_id)
+        if not metadata:
+            return None
+
+        return {
+            "article_id": self._normalize_article_id(article_id),
+            "score": 1.0,
+            "source": "anchor",
+            "metadata": metadata,
+        }
+
+    @staticmethod
+    def _merge_candidate_groups(*candidate_groups: list[RecommendationCandidate]) -> list[RecommendationCandidate]:
+        merged: dict[str, RecommendationCandidate] = {}
+        sources: dict[str, set[str]] = defaultdict(set)
+
+        for group in candidate_groups:
+            for candidate in group:
+                existing = merged.get(candidate.article_id)
+                if existing is None:
+                    merged[candidate.article_id] = candidate
+                else:
+                    existing.score += candidate.score
+                    existing.features.update(candidate.features)
+                    existing.metadata = existing.metadata or candidate.metadata
+
+                sources[candidate.article_id].add(candidate.source)
+
+        for article_id, candidate in merged.items():
+            candidate.source = "+".join(sorted(sources[article_id]))
+
+        return list(merged.values())
+
+    def _anchor_candidate(self, article_id: str) -> RecommendationCandidate | None:
+        metadata = self._catalog_lookup(article_id)
+        normalized_article_id = self._normalize_article_id(article_id)
+        if not metadata:
+            return None
+
+        return RecommendationCandidate(
+            article_id=normalized_article_id,
+            score=1.0,
+            source="anchor",
+            metadata=metadata,
+            features={},
+        )
+
+    def _target_profile_text(self, article_id: str) -> str:
+        metadata = self._catalog_lookup(article_id)
+        if not metadata:
+            return ""
+
+        fields = [
+            metadata.get("prod_name", ""),
+            metadata.get("product_type_name", ""),
+            metadata.get("product_group_name", ""),
+            metadata.get("department_name", ""),
+            metadata.get("section_name", ""),
+            metadata.get("colour_group_name", ""),
+            metadata.get("detail_desc", ""),
+        ]
+        return ". ".join(str(field).strip() for field in fields if str(field).strip())
+
+    def _semantic_related(self, article_id: str, k: int) -> list[RecommendationCandidate]:
+        if self.semantic_engine is None:
+            return []
+
+        target_text = self._target_profile_text(article_id)
+        if not target_text:
+            return []
+
+        try:
+            results = self.semantic_engine.search(target_text, k=max(k * 4, 24))
+        except Exception:
+            return []
+
+        normalized_article_id = self._normalize_article_id(article_id)
+        filtered = [candidate for candidate in results if candidate.article_id != normalized_article_id]
+        return filtered[:k]
+
+    def _graph_related(self, article_id: str, k: int) -> list[RecommendationCandidate]:
+        if self.gnn_engine is None:
+            return []
+
+        try:
+            return self.gnn_engine.similar_items(article_id, k=max(k * 4, 24))[:k]
+        except Exception:
+            return []
+
+    def _co_purchase_related(self, article_id: str, k: int) -> list[RecommendationCandidate]:
+        if self.transactions_df.empty:
+            return []
+
+        normalized_article_id = self._normalize_article_id(article_id)
+        buyers = self.transactions_df[self.transactions_df["article_id"].astype(str) == normalized_article_id]["customer_id"]
+        if buyers.empty:
+            return []
+
+        co_purchases = self.transactions_df[
+            self.transactions_df["customer_id"].isin(buyers.astype(str))
+            & (self.transactions_df["article_id"].astype(str) != normalized_article_id)
+        ]
+        if co_purchases.empty:
+            return []
+
+        counts = co_purchases["article_id"].astype(str).value_counts().head(k * 4)
+        max_count = float(counts.iloc[0]) if not counts.empty else 1.0
+
+        candidates: list[RecommendationCandidate] = []
+        for candidate_article_id, count in counts.items():
+            score = float(count) / max_count
+            candidates.append(
+                RecommendationCandidate(
+                    article_id=str(candidate_article_id).zfill(10),
+                    score=score,
+                    source="co-purchase",
+                    metadata=self._catalog_lookup(str(candidate_article_id)),
+                    features={"co_purchase_score": score},
+                )
+            )
+
+        return candidates[:k]
+
+    def _metadata_related(self, article_id: str, k: int) -> list[RecommendationCandidate]:
+        target = self._catalog_lookup(article_id)
+        if not target:
+            return []
+
+        normalized_article_id = self._normalize_article_id(article_id)
+        category = str(target.get("product_group_name", "")).strip().lower()
+        color = str(target.get("colour_group_name", "")).strip().lower()
+        department = str(target.get("department_name", "")).strip().lower()
+
+        candidates: list[RecommendationCandidate] = []
+        for row in self.articles_df.to_dict(orient="records"):
+            candidate_article_id = str(row.get("article_id", "")).zfill(10)
+            if candidate_article_id == normalized_article_id:
+                continue
+
+            score = 0.0
+            if category and str(row.get("product_group_name", "")).strip().lower() == category:
+                score += 1.0
+            if color and str(row.get("colour_group_name", "")).strip().lower() == color:
+                score += 0.7
+            if department and str(row.get("department_name", "")).strip().lower() == department:
+                score += 0.4
+
+            if score <= 0:
+                continue
+
+            candidates.append(
+                RecommendationCandidate(
+                    article_id=candidate_article_id,
+                    score=score,
+                    source="metadata",
+                    metadata=row,
+                    features={"metadata_similarity_score": score},
+                )
+            )
+
+        candidates.sort(key=lambda candidate: candidate.score, reverse=True)
+        return candidates[:k]
+
     def _fallback_search(self, query: str, k: int) -> list[RecommendationCandidate]:
         query_tokens = set(query.lower().split())
         candidates: list[RecommendationCandidate] = []
@@ -330,7 +505,7 @@ class RecommenderService:
         else:
             candidates = self._fallback_recommend(customer_id, k)
 
-        return [asdict(candidate) for candidate in candidates[:k]]
+        return [self._candidate_to_dict(candidate) for candidate in candidates[:k]]
 
     def search(self, query: str, k: int = 12) -> list[dict[str, Any]]:
         if self.semantic_engine:
@@ -341,7 +516,42 @@ class RecommenderService:
         else:
             results = self._fallback_search(query, k)
 
-        return [asdict(candidate) for candidate in results[:k]]
+        return [self._candidate_to_dict(candidate) for candidate in results[:k]]
+
+    def related(self, article_id: str, k: int = 12, mode: str = "hybrid") -> list[dict[str, Any]]:
+        semantic_candidates = self._semantic_related(article_id, k=max(k * 3, 18))
+        graph_candidates = self._graph_related(article_id, k=max(k * 3, 18))
+        co_purchase_candidates = self._co_purchase_related(article_id, k=max(k * 3, 18))
+        metadata_candidates = self._metadata_related(article_id, k=max(k * 3, 18))
+
+        if mode == "gnn":
+            merged = self._merge_candidate_groups(graph_candidates, co_purchase_candidates, metadata_candidates)
+        elif mode == "semantic":
+            merged = self._merge_candidate_groups(semantic_candidates, metadata_candidates)
+        else:
+            merged = self._merge_candidate_groups(
+                graph_candidates,
+                semantic_candidates,
+                co_purchase_candidates,
+                metadata_candidates,
+            )
+
+        normalized_article_id = self._normalize_article_id(article_id)
+        filtered = [candidate for candidate in merged if candidate.article_id != normalized_article_id]
+        ordered = sorted(filtered, key=lambda candidate: candidate.score, reverse=True)
+        return [self._candidate_to_dict(candidate) for candidate in ordered[:k]]
+
+    def discover(self, query: str, k: int = 12, mode: str = "hybrid") -> dict[str, Any]:
+        search_results = self.search(query, k=max(k, 8))
+        if not search_results:
+            return {"anchor": None, "recommendations": []}
+
+        anchor = search_results[0]
+        recommendations = self.related(anchor["article_id"], k=k, mode=mode)
+        return {
+            "anchor": anchor,
+            "recommendations": recommendations,
+        }
 
     def explain(self, customer_id: str, article_id: str) -> list[str]:
         reasons: list[str] = []
@@ -362,4 +572,34 @@ class RecommenderService:
             reasons.append(f"It belongs to the {category} category seen in your shopping history.")
 
         reasons.append("Its hybrid score combines collaborative signals with semantic similarity.")
+        return reasons
+
+    def explain_related(self, anchor_article_id: str, article_id: str) -> list[str]:
+        anchor = self._catalog_lookup(anchor_article_id)
+        target = self._catalog_lookup(article_id)
+        reasons: list[str] = []
+
+        anchor_name = str(anchor.get("prod_name", anchor_article_id))
+        target_name = str(target.get("prod_name", article_id))
+
+        anchor_category = str(anchor.get("product_group_name", "")).strip()
+        target_category = str(target.get("product_group_name", "")).strip()
+        if anchor_category and anchor_category == target_category:
+            reasons.append(f"{target_name} shares the same product group as {anchor_name}: {anchor_category}.")
+
+        anchor_color = str(anchor.get("colour_group_name", "")).strip()
+        target_color = str(target.get("colour_group_name", "")).strip()
+        if anchor_color and anchor_color == target_color:
+            reasons.append(f"Both items sit in the same color family: {anchor_color}.")
+
+        buyers = self.transactions_df[self.transactions_df["article_id"].astype(str) == self._normalize_article_id(anchor_article_id)]
+        if not buyers.empty:
+            related_buyers = self.transactions_df[
+                self.transactions_df["customer_id"].isin(buyers["customer_id"].astype(str))
+                & (self.transactions_df["article_id"].astype(str) == self._normalize_article_id(article_id))
+            ]
+            if not related_buyers.empty:
+                reasons.append("The items appear together in customer purchase histories.")
+
+        reasons.append("The recommendation score is built from model similarity plus catalog-level matching signals.")
         return reasons

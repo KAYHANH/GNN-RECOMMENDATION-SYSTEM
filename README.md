@@ -194,6 +194,16 @@ python training\finetune_encoder.py `
   --output-dir artifacts\fashion-minilm-finetuned
 ```
 
+## Build The Semantic Search Index
+
+```powershell
+python -m training.build_semantic_index `
+  --articles data\articles_cleaned.csv `
+  --output-dir artifacts
+```
+
+The semantic builder prefers the sentence-transformer backend when it is available, and automatically falls back to a persisted `tfidf-svd` semantic model when the local transformer stack is unavailable. The API loads either backend from the generated artifacts.
+
 ## Run the API
 
 ```powershell

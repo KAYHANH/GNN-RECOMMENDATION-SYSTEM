@@ -219,6 +219,37 @@ class LightGCNRecommender:
     def recommend(self, customer_id: str, k: int = 12) -> list[str]:
         return [candidate.article_id for candidate in self.get_candidates(customer_id, k=k)]
 
+    def similar_items(self, article_id: str, k: int = 12) -> list[RecommendationCandidate]:
+        normalized_article_id = str(article_id).zfill(10)
+        item_idx = self.artifacts.item_mapping.get(normalized_article_id)
+        if item_idx is None:
+            return []
+
+        target_vector = self.artifacts.item_embeddings[item_idx]
+        scores = self.artifacts.item_embeddings @ target_vector
+
+        ranked: list[RecommendationCandidate] = []
+        for candidate_idx in np.argsort(-scores):
+            candidate_article_id = self._idx_to_article[int(candidate_idx)]
+            if candidate_article_id == normalized_article_id:
+                continue
+
+            similarity_score = float(scores[int(candidate_idx)])
+            ranked.append(
+                RecommendationCandidate(
+                    article_id=candidate_article_id,
+                    score=similarity_score,
+                    source="lightgcn-item",
+                    metadata=self._article_metadata(candidate_article_id),
+                    features={"gnn_item_similarity_score": similarity_score},
+                )
+            )
+
+            if len(ranked) >= k:
+                break
+
+        return ranked
+
     def customer_history(self, customer_id: str, limit: int = 10) -> list[dict[str, object]]:
         if self.interactions_df is None:
             return []

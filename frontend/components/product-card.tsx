@@ -1,6 +1,3 @@
-import type { CSSProperties, ReactNode } from "react";
-import { useEffect, useState } from "react";
-
 export type RecommendationItem = {
   article_id: string;
   score: number;
@@ -8,18 +5,10 @@ export type RecommendationItem = {
   metadata: Record<string, unknown>;
 };
 
-type ProductMediaProps = {
-  item: RecommendationItem;
-  apiBaseUrl: string;
-  className: string;
-  alt: string;
-  children?: ReactNode;
-};
-
 type ProductCardProps = {
   item: RecommendationItem;
-  apiBaseUrl: string;
   label: string;
+  imageBaseUrl: string;
   onSelect: (item: RecommendationItem) => void;
   selected?: boolean;
 };
@@ -38,52 +27,16 @@ export function getItemText(item: RecommendationItem, key: string, fallback: str
   return fallback;
 }
 
-export function getProductTone(color: string): string {
-  const normalized = color.toLowerCase();
-
-  if (normalized.includes("black")) {
-    return "#5f5149";
-  }
-
-  if (normalized.includes("white") || normalized.includes("cream") || normalized.includes("beige")) {
-    return "#c7b29a";
-  }
-
-  if (normalized.includes("blue")) {
-    return "#6e87a5";
-  }
-
-  if (normalized.includes("red") || normalized.includes("burgundy")) {
-    return "#9d5a4d";
-  }
-
-  if (normalized.includes("green") || normalized.includes("olive")) {
-    return "#7a8668";
-  }
-
-  if (normalized.includes("pink") || normalized.includes("rose")) {
-    return "#b18086";
-  }
-
-  return "#8e796c";
+export function getItemBoolean(item: RecommendationItem, key: string): boolean {
+  const value = item.metadata?.[key];
+  return value === true || value === "true" || value === 1;
 }
 
-export function getArticleImageUrl(item: RecommendationItem, apiBaseUrl: string): string {
-  const metadataUrl = item.metadata?.image_url;
-  if (typeof metadataUrl === "string" && metadataUrl.trim()) {
-    return metadataUrl;
+export function getItemImageUrl(item: RecommendationItem, imageBaseUrl: string): string | null {
+  if (!getItemBoolean(item, "image_available")) {
+    return null;
   }
-
-  return `${apiBaseUrl}/catalog/images/${encodeURIComponent(item.article_id)}`;
-}
-
-function getFallbackStyle(item: RecommendationItem): CSSProperties {
-  const color = getItemText(item, "colour_group_name", "neutral");
-  const tone = getProductTone(color);
-
-  return {
-    backgroundImage: `linear-gradient(155deg, ${tone} 0%, rgba(255, 255, 255, 0.24) 42%, rgba(28, 24, 22, 0.78) 100%)`
-  };
+  return `${imageBaseUrl}/catalog/images/${encodeURIComponent(item.article_id)}`;
 }
 
 function shrinkText(text: string, maxLength: number): string {
@@ -94,56 +47,60 @@ function shrinkText(text: string, maxLength: number): string {
   return `${text.slice(0, maxLength - 3).trimEnd()}...`;
 }
 
-export function ProductMedia({ item, apiBaseUrl, className, alt, children }: ProductMediaProps) {
-  const [imageFailed, setImageFailed] = useState(false);
-  const imageUrl = getArticleImageUrl(item, apiBaseUrl);
+function getInitials(name: string): string {
+  const initials = name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((chunk) => chunk[0]?.toUpperCase() ?? "")
+    .join("");
 
-  useEffect(() => {
-    setImageFailed(false);
-  }, [imageUrl, item.article_id]);
-
-  return (
-    <div className={className} style={getFallbackStyle(item)}>
-      {!imageFailed ? (
-        <img
-          src={imageUrl}
-          alt={alt}
-          loading="lazy"
-          onError={() => setImageFailed(true)}
-        />
-      ) : null}
-      {children}
-    </div>
-  );
+  return initials || "HM";
 }
 
-export function ProductCard({ item, apiBaseUrl, label, onSelect, selected = false }: ProductCardProps) {
-  const productName = getItemText(item, "prod_name", item.article_id);
-  const color = getItemText(item, "colour_group_name", "Unknown color");
+export function ProductCard({ item, label, imageBaseUrl, onSelect, selected = false }: ProductCardProps) {
+  const name = getItemText(item, "prod_name", item.article_id);
   const category = getItemText(item, "product_group_name", "Fashion item");
-  const description = getItemText(item, "detail_desc", "No detailed description is available yet.");
+  const color = getItemText(item, "colour_group_name", "Unknown");
+  const description = getItemText(item, "detail_desc", "No detail description is available.");
+  const imageUrl = getItemImageUrl(item, imageBaseUrl);
 
   return (
     <button
       type="button"
-      className={`catalog-card${selected ? " is-selected" : ""}`}
+      className={`product-row${selected ? " is-selected" : ""}`}
       onClick={() => onSelect(item)}
     >
-      <ProductMedia item={item} apiBaseUrl={apiBaseUrl} className="catalog-card__media" alt={productName}>
-        <span className="catalog-card__badge">{label}</span>
-      </ProductMedia>
+      <div className="product-row__media" aria-hidden="true">
+        {imageUrl ? (
+          <img src={imageUrl} alt={name} loading="lazy" />
+        ) : (
+          <div className="product-row__placeholder">
+            <span>{getInitials(name)}</span>
+          </div>
+        )}
+      </div>
 
-      <div className="catalog-card__body">
-        <div className="catalog-card__meta">
+      <div className="product-row__body">
+        <div className="product-row__header">
+          <span className="product-row__label">{label}</span>
+          <span className="product-row__source">{item.source}</span>
+        </div>
+
+        <h3>{name}</h3>
+
+        <div className="product-row__meta">
           <span>{category}</span>
-          <span>{item.source}</span>
-        </div>
-        <h3>{productName}</h3>
-        <p>{shrinkText(description, 108)}</p>
-        <div className="catalog-card__footer">
           <span>{color}</span>
-          <span>score {item.score.toFixed(3)}</span>
+          <span>{item.article_id}</span>
         </div>
+
+        <p>{shrinkText(description, 140)}</p>
+      </div>
+
+      <div className="product-row__score">
+        <strong>{item.score.toFixed(3)}</strong>
+        <span>{imageUrl ? "Image ready" : "No image"}</span>
       </div>
     </button>
   );
