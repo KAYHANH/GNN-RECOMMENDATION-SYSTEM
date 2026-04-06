@@ -164,6 +164,8 @@ data/raw/images/011/0112679048.jpg
 
 Once the images are present, rerun the article preparation step so the cleaned catalog includes image metadata, and the API will serve them automatically at `/catalog/images/{article_id}`.
 
+If you do not have the Kaggle image archive on disk, the API can also fall back to public H&M-style product image URLs via `EXTERNAL_IMAGE_BASE_URL`. That keeps the frontend image-led even when `data/raw/images` is missing locally.
+
 ## Train LightGCN
 
 ```powershell

@@ -33,10 +33,16 @@ export function getItemBoolean(item: RecommendationItem, key: string): boolean {
 }
 
 export function getItemImageUrl(item: RecommendationItem, imageBaseUrl: string): string | null {
-  if (!getItemBoolean(item, "image_available")) {
-    return null;
+  const directUrl = item.metadata?.image_external_url;
+  if (typeof directUrl === "string" && directUrl.trim()) {
+    return directUrl;
   }
-  return `${imageBaseUrl}/catalog/images/${encodeURIComponent(item.article_id)}`;
+
+  if (getItemBoolean(item, "image_available")) {
+    return `${imageBaseUrl}/catalog/images/${encodeURIComponent(item.article_id)}`;
+  }
+
+  return null;
 }
 
 function shrinkText(text: string, maxLength: number): string {

@@ -1,11 +1,10 @@
 "use client";
 
-import { startTransition, useDeferredValue, useEffect, useState } from "react";
+import { startTransition, useEffect, useRef, useState, type FormEvent } from "react";
 
 import {
   ProductCard,
   type RecommendationItem,
-  getItemBoolean,
   getItemImageUrl,
   getItemText
 } from "../components/product-card";
@@ -92,16 +91,10 @@ const QUICK_QUERIES = [
 ] as const;
 
 const MODE_DETAILS: Record<RecommendationMode, string> = {
-  hybrid: "Blend graph, semantic, and co-purchase signals",
-  gnn: "Prioritize graph and behavior similarity",
-  semantic: "Prioritize item text similarity"
+  hybrid: "Blend graph behavior, text similarity, and co-purchase signals.",
+  gnn: "Bias toward graph and behavioral similarity.",
+  semantic: "Bias toward product language and metadata similarity."
 };
-
-const JOURNEY_STEPS = [
-  "Write the product or phrase you have in mind.",
-  "Pick the closest anchor item from the catalog.",
-  "Inspect the ranked set and why each item surfaced."
-] as const;
 
 async function getJson<T>(path: string): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, { cache: "no-store" });
@@ -115,89 +108,57 @@ function formatNumber(value: number | undefined): string {
   if (value === undefined) {
     return "-";
   }
-
   return new Intl.NumberFormat("en-US").format(value);
 }
 
-function DetailRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="detail-row">
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
-
-function SystemRow({
-  label,
-  value,
-  tone = "neutral"
-}: {
-  label: string;
-  value: string;
-  tone?: "neutral" | "good" | "warn";
-}) {
-  return (
-    <div className={`system-row system-row--${tone}`}>
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
-
-function ProductStage({
-  item,
+function RunwayProduct({
   title,
-  subtitle
+  item
 }: {
-  item: RecommendationItem | null;
   title: string;
-  subtitle: string;
+  item: RecommendationItem | null;
 }) {
-  const name = item ? getItemText(item, "prod_name", item.article_id) : "No product selected";
-  const category = item ? getItemText(item, "product_group_name", "Fashion item") : "Awaiting selection";
+  const imageUrl = item ? getItemImageUrl(item, API_BASE_URL) : null;
+  const name = item ? getItemText(item, "prod_name", item.article_id) : "Waiting for a product";
+  const category = item ? getItemText(item, "product_group_name", "Fashion item") : "No category";
   const color = item ? getItemText(item, "colour_group_name", "Unknown") : "No color";
   const description = item
     ? getItemText(item, "detail_desc", "No detail description is available.")
-    : "Search for a product first. The system will pin the closest catalog item here and use it as the anchor for recommendations.";
-  const imageUrl = item ? getItemImageUrl(item, API_BASE_URL) : null;
-  const imageReady = item ? getItemBoolean(item, "image_available") : false;
+    : "Submit a search and pick an anchor product to populate the runway.";
 
   return (
-    <section className="stage-block">
-      <div className="stage-block__header">
-        <p className="kicker">{subtitle}</p>
-        <h2>{title}</h2>
-      </div>
-
-      <div className="stage-visual">
+    <article className="runway-product">
+      <div className="runway-product__media">
         {imageUrl ? (
           <img src={imageUrl} alt={name} />
         ) : (
-          <div className="stage-visual__fallback">
-            <span>{name.slice(0, 1).toUpperCase() || "F"}</span>
-            <small>{imageReady ? "Image loading" : "Image archive not connected"}</small>
+          <div className="runway-product__fallback">
+            <span>{name.charAt(0).toUpperCase() || "F"}</span>
+            <small>Product image unavailable</small>
           </div>
         )}
+        <div className="runway-product__overlay">
+          <p>{title}</p>
+          <strong>{category}</strong>
+        </div>
       </div>
 
-      <div className="stage-copy">
-        <h3>{name}</h3>
+      <div className="runway-product__copy">
+        <h2>{name}</h2>
         <p>{description}</p>
+        <div className="runway-product__facts">
+          <span>{color}</span>
+          <span>{item?.article_id ?? "-"}</span>
+          <span>{item ? item.score.toFixed(3) : "-"}</span>
+        </div>
       </div>
-
-      <div className="detail-list">
-        <DetailRow label="Category" value={category} />
-        <DetailRow label="Color" value={color} />
-        <DetailRow label="Article ID" value={item?.article_id ?? "-"} />
-        <DetailRow label="Image state" value={imageReady ? "Connected" : "Unavailable"} />
-      </div>
-    </section>
+    </article>
   );
 }
 
 export default function Page() {
-  const [query, setQuery] = useState("black summer dress");
+  const [draftQuery, setDraftQuery] = useState("black summer dress");
+  const [activeQuery, setActiveQuery] = useState("black summer dress");
   const [mode, setMode] = useState<RecommendationMode>("hybrid");
   const [searchResults, setSearchResults] = useState<RecommendationItem[]>([]);
   const [anchorItem, setAnchorItem] = useState<RecommendationItem | null>(null);
@@ -205,11 +166,13 @@ export default function Page() {
   const [selectedRecommendation, setSelectedRecommendation] = useState<RecommendationItem | null>(null);
   const [reasons, setReasons] = useState<string[]>([]);
   const [snapshot, setSnapshot] = useState<ServiceSnapshot | null>(null);
-  const [status, setStatus] = useState("Search for a product to let the recommender build a ranked set.");
-  const [isLoadingSearch, setIsLoadingSearch] = useState(false);
-  const [isLoadingRecommendations, setIsLoadingRecommendations] = useState(false);
+  const [status, setStatus] = useState("Search for a product and lock an anchor item from the H&M catalog.");
+  const [isSearching, setIsSearching] = useState(false);
+  const [isLoadingRelated, setIsLoadingRelated] = useState(false);
   const [isLoadingReasons, setIsLoadingReasons] = useState(false);
-  const deferredQuery = useDeferredValue(query);
+
+  const discoveryRequestRef = useRef(0);
+  const reasonRequestRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -234,62 +197,52 @@ export default function Page() {
   }, []);
 
   useEffect(() => {
-    if (!deferredQuery.trim()) {
-      setSearchResults([]);
-      setAnchorItem(null);
-      setRecommendations([]);
-      setSelectedRecommendation(null);
-      setReasons([]);
+    if (!activeQuery.trim()) {
       return;
     }
 
-    let cancelled = false;
+    const requestId = ++discoveryRequestRef.current;
 
     async function loadDiscovery() {
       try {
-        setIsLoadingSearch(true);
-        setIsLoadingRecommendations(true);
-        setStatus("Searching the catalog and assembling the related set...");
+        setIsSearching(true);
+        setStatus(`Searching the catalog for "${activeQuery}"...`);
 
         const [searchPayload, discoverPayload] = await Promise.all([
-          getJson<SearchResponse>(`/search?q=${encodeURIComponent(deferredQuery)}&k=8`),
-          getJson<DiscoverResponse>(
-            `/discover?q=${encodeURIComponent(deferredQuery)}&k=8&mode=${encodeURIComponent(mode)}`
-          )
+          getJson<SearchResponse>(`/search?q=${encodeURIComponent(activeQuery)}&k=8`),
+          getJson<DiscoverResponse>(`/discover?q=${encodeURIComponent(activeQuery)}&k=8&mode=${encodeURIComponent(mode)}`)
         ]);
 
-        if (!cancelled) {
-          startTransition(() => {
-            setSearchResults(searchPayload.results);
-            setAnchorItem(discoverPayload.anchor);
-            setRecommendations(discoverPayload.recommendations);
-            setSelectedRecommendation(discoverPayload.recommendations[0] ?? null);
-            setReasons([]);
-            setSnapshot(discoverPayload.meta.snapshot);
-            setStatus(
-              discoverPayload.anchor
-                ? `Anchor locked to ${getItemText(discoverPayload.anchor, "prod_name", discoverPayload.anchor.article_id)}.`
-                : "No anchor product found for that query."
-            );
-          });
+        if (requestId !== discoveryRequestRef.current) {
+          return;
         }
+
+        startTransition(() => {
+          setSearchResults(searchPayload.results);
+          setAnchorItem(discoverPayload.anchor);
+          setRecommendations(discoverPayload.recommendations);
+          setSelectedRecommendation(discoverPayload.recommendations[0] ?? null);
+          setReasons([]);
+          setSnapshot(discoverPayload.meta.snapshot);
+          setStatus(
+            discoverPayload.anchor
+              ? `Anchor locked to ${getItemText(discoverPayload.anchor, "prod_name", discoverPayload.anchor.article_id)}.`
+              : `No anchor product found for "${activeQuery}".`
+          );
+        });
       } catch (error) {
-        if (!cancelled) {
+        if (requestId === discoveryRequestRef.current) {
           setStatus(error instanceof Error ? error.message : "Discovery request failed.");
         }
       } finally {
-        if (!cancelled) {
-          setIsLoadingSearch(false);
-          setIsLoadingRecommendations(false);
+        if (requestId === discoveryRequestRef.current) {
+          setIsSearching(false);
         }
       }
     }
 
     loadDiscovery();
-    return () => {
-      cancelled = true;
-    };
-  }, [deferredQuery, mode]);
+  }, [activeQuery, mode]);
 
   useEffect(() => {
     if (!anchorItem || !selectedRecommendation) {
@@ -299,7 +252,7 @@ export default function Page() {
 
     const activeAnchor = anchorItem;
     const activeRecommendation = selectedRecommendation;
-    let cancelled = false;
+    const requestId = ++reasonRequestRef.current;
 
     async function loadReasons() {
       try {
@@ -308,32 +261,41 @@ export default function Page() {
           `/explain-related/${encodeURIComponent(activeAnchor.article_id)}/${encodeURIComponent(activeRecommendation.article_id)}`
         );
 
-        if (!cancelled) {
-          startTransition(() => {
-            setReasons(payload.reasons);
-            setSnapshot(payload.meta.snapshot);
-          });
+        if (requestId !== reasonRequestRef.current) {
+          return;
         }
+
+        startTransition(() => {
+          setReasons(payload.reasons);
+          setSnapshot(payload.meta.snapshot);
+        });
       } catch (error) {
-        if (!cancelled) {
-          setStatus(error instanceof Error ? error.message : "Failed to explain recommendation.");
+        if (requestId === reasonRequestRef.current) {
+          setStatus(error instanceof Error ? error.message : "Failed to explain the recommendation.");
         }
       } finally {
-        if (!cancelled) {
+        if (requestId === reasonRequestRef.current) {
           setIsLoadingReasons(false);
         }
       }
     }
 
     loadReasons();
-    return () => {
-      cancelled = true;
-    };
   }, [anchorItem, selectedRecommendation]);
 
-  async function loadRelatedForItem(item: RecommendationItem) {
+  async function handleSearchSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const nextQuery = draftQuery.trim();
+    if (!nextQuery) {
+      setStatus("Write a product name or phrase first.");
+      return;
+    }
+    setActiveQuery(nextQuery);
+  }
+
+  async function handleAnchorPick(item: RecommendationItem) {
     try {
-      setIsLoadingRecommendations(true);
+      setIsLoadingRelated(true);
       setStatus(`Building a related set from ${getItemText(item, "prod_name", item.article_id)}...`);
 
       const payload = await getJson<RelatedResponse>(
@@ -346,168 +308,136 @@ export default function Page() {
         setSelectedRecommendation(payload.recommendations[0] ?? null);
         setReasons([]);
         setSnapshot(payload.meta.snapshot);
-        setStatus(`Loaded ${payload.recommendations.length} related products from the selected anchor.`);
+        setStatus(`Loaded ${payload.recommendations.length} recommendations from the selected anchor.`);
       });
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Failed to load related products.");
     } finally {
-      setIsLoadingRecommendations(false);
+      setIsLoadingRelated(false);
     }
   }
 
-  const recommendationTitle = selectedRecommendation
+  function applyQuickQuery(query: string) {
+    setDraftQuery(query);
+    setActiveQuery(query);
+  }
+
+  const selectedName = selectedRecommendation
     ? getItemText(selectedRecommendation, "prod_name", selectedRecommendation.article_id)
-    : "No recommendation selected";
+    : "your selected recommendation";
 
   return (
-    <main className="atelier-app">
-      <section className="hero-band frame">
-        <div className="hero-band__copy">
-          <p className="kicker">Fashion recommender workspace</p>
-          <h1>Search one product and let the model expand the rack around it.</h1>
-          <p className="lead">
-            Write a product name, color, or intent like <code>black summer dress</code>. The app finds the nearest
-            catalog anchor, ranks similar items through the recommendation stack, and explains why each result belongs
-            in the set.
+    <main className="studio-page">
+      <header className="command-deck">
+        <div className="command-deck__intro">
+          <p className="eyebrow">Fashion recommendation studio</p>
+          <h1>Search the product you want and let the model build the rack around it.</h1>
+          <p className="command-deck__copy">
+            This workspace is built for one job: write a product phrase, choose the closest H&M item, and inspect
+            the products your recommendation stack thinks belong next to it.
           </p>
         </div>
 
-        <div className="hero-band__stats">
-          <span className="hero-pill">{formatNumber(snapshot?.catalog.article_count)} articles</span>
-          <span className="hero-pill">{formatNumber(snapshot?.catalog.customer_count)} customers</span>
-          <span className="hero-pill">{snapshot?.engines.fallback_active ? "Fallback mode" : "Model mode"}</span>
-          <span className="hero-pill">{MODE_DETAILS[mode]}</span>
+        <form className="search-console" onSubmit={handleSearchSubmit}>
+          <label htmlFor="search-query">Product search</label>
+          <div className="search-console__row">
+            <input
+              id="search-query"
+              value={draftQuery}
+              onChange={(event) => setDraftQuery(event.target.value)}
+              placeholder="black summer dress, cropped jacket, white shirt"
+            />
+            <button type="submit" className="search-submit" disabled={isSearching}>
+              {isSearching ? "Searching" : "Search"}
+            </button>
+          </div>
+
+          <div className="mode-pills" role="group" aria-label="Recommendation mode">
+            {(Object.keys(MODE_DETAILS) as RecommendationMode[]).map((modeKey) => (
+              <button
+                key={modeKey}
+                type="button"
+                className={`mode-pill${mode === modeKey ? " is-active" : ""}`}
+                onClick={() => setMode(modeKey)}
+              >
+                {modeKey}
+              </button>
+            ))}
+          </div>
+
+          <div className="quick-prompt-row">
+            {QUICK_QUERIES.map((quickQuery) => (
+              <button key={quickQuery} type="button" className="quick-prompt" onClick={() => applyQuickQuery(quickQuery)}>
+                {quickQuery}
+              </button>
+            ))}
+          </div>
+        </form>
+      </header>
+
+      <section className="status-ribbon">
+        <span>{status}</span>
+        <div className="status-ribbon__stats">
+          <strong>{formatNumber(snapshot?.catalog.article_count)} products</strong>
+          <strong>{formatNumber(snapshot?.catalog.image_count)} images</strong>
+          <strong>{snapshot?.engines.fallback_active ? "fallback" : "model"}</strong>
         </div>
       </section>
 
-      <section className="journey-strip frame" aria-label="How the workspace works">
-        {JOURNEY_STEPS.map((step, index) => (
-          <div key={step} className="journey-step">
-            <span>{String(index + 1).padStart(2, "0")}</span>
-            <p>{step}</p>
-          </div>
-        ))}
-      </section>
-
-      <div className="atelier-grid frame">
-        <aside className="control-rail">
-          <section className="surface surface--dense">
-            <div className="surface__header">
-              <div>
-                <p className="kicker">Search brief</p>
-                <h2>Tell the system what you want</h2>
-              </div>
-            </div>
-
-            <label className="search-label" htmlFor="product-query">
-              Product or phrase
-            </label>
-            <input
-              id="product-query"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="black summer dress, cropped denim jacket, white shirt"
-            />
-
-            <div className="mode-switcher" role="group" aria-label="Recommendation mode">
-              {(Object.keys(MODE_DETAILS) as RecommendationMode[]).map((modeKey) => (
-                <button
-                  key={modeKey}
-                  type="button"
-                  className={`mode-button${mode === modeKey ? " is-active" : ""}`}
-                  onClick={() => setMode(modeKey)}
-                >
-                  <span>{modeKey}</span>
-                  <small>{MODE_DETAILS[modeKey]}</small>
-                </button>
-              ))}
-            </div>
-
-            <div className="status-callout">
-              <p className="kicker">Live status</p>
-              <p>{status}</p>
-            </div>
-          </section>
-
-          <section className="surface surface--dense">
-            <div className="surface__header">
-              <div>
-                <p className="kicker">Quick prompts</p>
-                <h2>Jump into the catalog</h2>
-              </div>
-            </div>
-
-            <div className="quick-actions">
-              {QUICK_QUERIES.map((quickQuery) => (
-                <button key={quickQuery} type="button" className="quick-chip" onClick={() => setQuery(quickQuery)}>
-                  {quickQuery}
-                </button>
-              ))}
-            </div>
-          </section>
-
-          <section className="surface surface--dense">
-            <div className="surface__header">
-              <div>
-                <p className="kicker">System readiness</p>
-                <h2>What is live in the stack</h2>
-              </div>
-            </div>
-
-            <div className="system-list">
-              <SystemRow
-                label="Graph engine"
-                value={snapshot?.engines.graph_ready ? "Ready" : "Missing"}
-                tone={snapshot?.engines.graph_ready ? "good" : "warn"}
-              />
-              <SystemRow
-                label="Semantic engine"
-                value={snapshot?.engines.semantic_ready ? "Ready" : "Missing"}
-                tone={snapshot?.engines.semantic_ready ? "good" : "warn"}
-              />
-              <SystemRow
-                label="Image archive"
-                value={snapshot?.artifacts.images_ready ? "Connected" : "Not loaded"}
-                tone={snapshot?.artifacts.images_ready ? "good" : "warn"}
-              />
-              <SystemRow
-                label="Catalog photos"
-                value={formatNumber(snapshot?.catalog.image_count)}
-                tone={snapshot?.catalog.image_count ? "good" : "warn"}
-              />
-              <SystemRow
-                label="Interactions"
-                value={formatNumber(snapshot?.catalog.interaction_count)}
-              />
-            </div>
-          </section>
-        </aside>
-
-        <section className="workspace-column">
+      <section className="runway-shell">
+        <aside className="runway-shell__left">
           <SectionShell
-            title="Search Matches"
-            subtitle="Closest catalog anchors"
-            meta={isLoadingSearch ? "Searching" : `${searchResults.length} results`}
+            title="Anchor Options"
+            subtitle="Closest search matches"
+            meta={isSearching ? "Searching" : `${searchResults.length} matches`}
           >
             <div className="product-list">
               {searchResults.map((item) => (
                 <ProductCard
-                  key={`search-${item.article_id}`}
+                  key={`match-${item.article_id}`}
                   item={item}
-                  label="Anchor option"
+                  label="Anchor"
                   imageBaseUrl={API_BASE_URL}
                   selected={anchorItem?.article_id === item.article_id}
-                  onSelect={loadRelatedForItem}
+                  onSelect={handleAnchorPick}
                 />
               ))}
             </div>
-            {searchResults.length === 0 ? <p className="empty-copy">Closest catalog matches will appear here.</p> : null}
           </SectionShell>
+        </aside>
 
+        <section className="runway-shell__center">
+          <div className="runway-stage">
+            <RunwayProduct title="Anchor product" item={anchorItem} />
+            <RunwayProduct title="Selected recommendation" item={selectedRecommendation} />
+          </div>
+
+          <div className="logic-strip">
+            <div className="logic-strip__intro">
+              <p className="eyebrow">Why it surfaced</p>
+              <h2>{selectedName}</h2>
+              <p>{MODE_DETAILS[mode]}</p>
+            </div>
+
+            {isLoadingReasons ? (
+              <p className="logic-strip__empty">Explaining the selected recommendation...</p>
+            ) : reasons.length > 0 ? (
+              <ol className="logic-list">
+                {reasons.map((reason) => (
+                  <li key={reason}>{reason}</li>
+                ))}
+              </ol>
+            ) : (
+              <p className="logic-strip__empty">Pick a recommendation to inspect the reasoning.</p>
+            )}
+          </div>
+        </section>
+
+        <aside className="runway-shell__right">
           <SectionShell
-            title="Recommended Set"
-            subtitle="Items ranked from the selected anchor"
-            meta={isLoadingRecommendations ? "Loading" : `${recommendations.length} items`}
+            title="Recommended Rack"
+            subtitle="Model-ranked items"
+            meta={isLoadingRelated ? "Refreshing" : `${recommendations.length} items`}
           >
             <div className="product-list">
               {recommendations.map((item) => (
@@ -521,45 +451,35 @@ export default function Page() {
                 />
               ))}
             </div>
-            {recommendations.length === 0 ? (
-              <p className="empty-copy">Recommendations will appear here after the anchor product is set.</p>
-            ) : null}
           </SectionShell>
-        </section>
-
-        <aside className="spotlight-column">
-          <section className="spotlight surface">
-            <ProductStage item={anchorItem} title="Anchor product" subtitle="Matched from your search" />
-
-            <div className="spotlight-divider" />
-
-            <ProductStage item={selectedRecommendation} title="Selected recommendation" subtitle="Current focus" />
-
-            <div className="spotlight-divider" />
-
-            <section className="reason-block">
-              <div className="surface__header">
-                <div>
-                  <p className="kicker">Recommendation logic</p>
-                  <h2>Why {recommendationTitle} surfaced</h2>
-                </div>
-              </div>
-
-              {isLoadingReasons ? (
-                <p className="empty-copy">Explaining the recommendation...</p>
-              ) : reasons.length > 0 ? (
-                <ol className="reason-list">
-                  {reasons.map((reason) => (
-                    <li key={reason}>{reason}</li>
-                  ))}
-                </ol>
-              ) : (
-                <p className="empty-copy">Select a recommendation to see the model explanation.</p>
-              )}
-            </section>
-          </section>
         </aside>
-      </div>
+      </section>
+
+      <footer className="ops-band">
+        <div className="ops-band__block">
+          <p className="eyebrow">System state</p>
+          <h2>What is live right now</h2>
+        </div>
+
+        <div className="ops-band__metrics">
+          <div>
+            <span>Graph engine</span>
+            <strong>{snapshot?.engines.graph_ready ? "Ready" : "Missing"}</strong>
+          </div>
+          <div>
+            <span>Semantic engine</span>
+            <strong>{snapshot?.engines.semantic_ready ? "Ready" : "Missing"}</strong>
+          </div>
+          <div>
+            <span>Public image feed</span>
+            <strong>{snapshot?.catalog.image_count ? "Connected" : "Unavailable"}</strong>
+          </div>
+          <div>
+            <span>Interactions</span>
+            <strong>{formatNumber(snapshot?.catalog.interaction_count)}</strong>
+          </div>
+        </div>
+      </footer>
     </main>
   );
 }

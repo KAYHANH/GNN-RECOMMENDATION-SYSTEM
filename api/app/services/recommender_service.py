@@ -153,8 +153,19 @@ class RecommenderService:
             else:
                 enriched["image_local_path"] = ""
 
-        if "image_available" not in enriched.columns:
-            enriched["image_available"] = enriched["image_local_path"].astype(str).str.len() > 0
+        if "image_external_url" not in enriched.columns:
+            if self.settings.external_image_base_url:
+                enriched["image_external_url"] = enriched["image_relative_path"].map(
+                    lambda relative_path: f"{self.settings.external_image_base_url}/{relative_path}"
+                )
+            else:
+                enriched["image_external_url"] = ""
+
+        enriched["image_available"] = (
+            enriched["image_local_path"].astype(str).str.len() > 0
+        ) | (
+            enriched["image_external_url"].astype(str).str.len() > 0
+        )
 
         return enriched
 
@@ -261,6 +272,13 @@ class RecommenderService:
         if fallback.exists():
             return fallback
 
+        return None
+
+    def article_image_url(self, article_id: str) -> str | None:
+        article = self._catalog_lookup(article_id)
+        external_url = article.get("image_external_url")
+        if isinstance(external_url, str) and external_url:
+            return external_url
         return None
 
     def _candidate_to_dict(self, candidate: RecommendationCandidate) -> dict[str, Any]:

@@ -7,7 +7,7 @@ from typing import Annotated
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.app.config import Settings, get_settings
@@ -138,9 +138,14 @@ async def catalog_image(
     service: Annotated[RecommenderService, Depends(get_recommender_service)],
 ):
     image_path = service.article_image_path(article_id)
-    if image_path is None:
-        raise HTTPException(status_code=404, detail="Image not found for the requested article.")
-    return FileResponse(image_path, media_type="image/jpeg")
+    if image_path is not None:
+        return FileResponse(image_path, media_type="image/jpeg")
+
+    external_url = service.article_image_url(article_id)
+    if external_url is not None:
+        return RedirectResponse(url=external_url, status_code=307)
+
+    raise HTTPException(status_code=404, detail="Image not found for the requested article.")
 
 
 @app.get("/recommend/{customer_id}", response_model=RecommendationResponse, tags=["Recommendations"])

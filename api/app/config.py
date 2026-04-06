@@ -31,6 +31,7 @@ class Settings:
     artifacts_dir: Path
     data_dir: Path
     raw_images_dir: Path
+    external_image_base_url: str
     semantic_model_name: str
     cors_origins: tuple[str, ...]
     docs_enabled: bool
@@ -90,6 +91,10 @@ def get_settings() -> Settings:
         artifacts_dir=PROJECT_ROOT / os.getenv("ARTIFACTS_DIR", "artifacts"),
         data_dir=PROJECT_ROOT / os.getenv("DATA_DIR", "data"),
         raw_images_dir=PROJECT_ROOT / os.getenv("RAW_IMAGES_DIR", "data/raw/images"),
+        external_image_base_url=os.getenv(
+            "EXTERNAL_IMAGE_BASE_URL",
+            "https://qdrant-nextjs-demo-product-images.s3.us-east-1.amazonaws.com/images",
+        ).rstrip("/"),
         semantic_model_name=os.getenv("SEMANTIC_MODEL_NAME", "all-MiniLM-L6-v2"),
         cors_origins=_get_csv(
             "CORS_ORIGINS",

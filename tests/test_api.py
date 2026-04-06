@@ -82,9 +82,10 @@ class FashionApiTests(unittest.TestCase):
         self.assertIn("recommendations", payload)
         self.assertIn("meta", payload)
 
-    def test_catalog_image_returns_not_found_without_downloaded_images(self) -> None:
-        response = self.client.get("/catalog/images/0926246001")
-        self.assertEqual(response.status_code, 404)
+    def test_catalog_image_redirects_to_public_fallback_when_local_images_are_missing(self) -> None:
+        response = self.client.get("/catalog/images/0926246001", follow_redirects=False)
+        self.assertEqual(response.status_code, 307)
+        self.assertIn("qdrant-nextjs-demo-product-images", response.headers["location"])
 
     def test_explain_endpoint_returns_reasons_and_meta(self) -> None:
         response = self.client.get("/explain/demo-customer/0926246001")
