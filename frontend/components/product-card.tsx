@@ -89,8 +89,11 @@ export function ProductCard({ item, label, imageBaseUrl, onSelect, selected = fa
 
       <div className="product-row__body">
         <div className="product-row__header">
-          <span className="product-row__label">{label}</span>
-          <span className="product-row__source">{item.source}</span>
+          <div className="product-row__eyebrow">
+            <span className="product-row__label">{label}</span>
+            <span className="product-row__source">{item.source}</span>
+          </div>
+          <strong className="product-row__score">{item.score.toFixed(3)}</strong>
         </div>
 
         <h3>{name}</h3>
@@ -102,11 +105,6 @@ export function ProductCard({ item, label, imageBaseUrl, onSelect, selected = fa
         </div>
 
         <p>{shrinkText(description, 140)}</p>
-      </div>
-
-      <div className="product-row__score">
-        <strong>{item.score.toFixed(3)}</strong>
-        <span>{imageUrl ? "Image ready" : "No image"}</span>
       </div>
     </button>
   );
