@@ -20,8 +20,48 @@ This repo upgrades that approach by:
 - Adding a temporal offline evaluation harness
 - Preparing a second-stage `LightGBM` reranker
 - Exposing the system through `FastAPI`
-- Scaffolding a `Next.js` demo UI
+- Shipping a `Next.js` search-to-recommend studio UI
 - Adding `MLflow`, `DVC`, and CI hooks
+
+## What The App Does
+
+The current product flow is:
+
+1. Type a product phrase like `black summer dress`
+2. The API finds the closest catalog item
+3. That item becomes the anchor product
+4. The model returns related products
+5. The UI explains why each recommendation surfaced
+
+The stack now supports:
+
+- product-to-product recommendation through `/discover` and `/related/{article_id}`
+- semantic search over the article catalog
+- graph-based item similarity from `LightGCN` artifacts
+- recommendation explanations through `/explain-related/{anchor_article_id}/{article_id}`
+- real product images through local Kaggle files or a public fallback image source
+
+## Quick Start
+
+If the cleaned H&M data and artifacts already exist, you can run the full project with:
+
+```powershell
+python -m uvicorn api.main:app --host 127.0.0.1 --port 8000
+```
+
+In a second terminal:
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+Open:
+
+- frontend: `http://127.0.0.1:3000`
+- API: `http://127.0.0.1:8000`
+- API docs: `http://127.0.0.1:8000/docs`
 
 ## Project Layout
 
@@ -218,10 +258,16 @@ The API now includes:
 - request tracing headers via `X-Request-ID` and `X-Process-Time-Ms`
 - configurable CORS and environment-driven settings via `.env`
 - richer response metadata for recommendation, search, and explanation calls
+- image delivery through `/catalog/images/{article_id}`
+- product discovery through `/discover?q=...`
+- item-to-item recommendation through `/related/{article_id}`
+- item-to-item explanation through `/explain-related/{anchor_article_id}/{article_id}`
 
 ## Frontend
 
-The frontend is scaffolded as a Next.js app. Install dependencies inside `frontend` before running it.
+The frontend is a search-driven recommendation studio built in Next.js. It is designed around one workflow: search a product, choose the anchor, inspect the ranked rack, and review the explanation.
+
+Install dependencies inside `frontend` before running it.
 
 ```powershell
 cd frontend
@@ -230,6 +276,22 @@ npm run dev
 ```
 
 Set `NEXT_PUBLIC_API_BASE_URL` in `frontend/.env.example` or `frontend/.env.local` if your API is not running on `http://127.0.0.1:8000`.
+
+### How To Use The UI
+
+1. Enter a phrase such as `wide leg jeans` or `white shirt`
+2. Press `Search`
+3. Pick the best anchor from `Anchor Options`
+4. Review the ranked products in `Recommended Rack`
+5. Click a recommendation to see why it was selected
+
+### Current Frontend Behavior
+
+- submit-driven search to avoid noisy requests on every keystroke
+- image-backed product cards
+- anchor selection and recommendation selection as separate actions
+- model mode indicators based on `/health/ready`
+- responsive layout for desktop and mobile
 
 ## Local Quality Checks
 
@@ -264,3 +326,4 @@ This starts:
 
 - The code is intentionally artifact-driven: the API starts even when trained assets are missing and falls back to deterministic demo behavior.
 - Heavy dependencies such as `torch`, `torch-geometric`, `faiss`, `sentence-transformers`, and `lightgbm` are imported lazily where possible so the project can still be inspected and tested without every ML package present.
+- When transformer-based semantic encoding is not available locally, the semantic index builder falls back to a persisted `tfidf-svd` backend so the discovery flow still works reliably.
