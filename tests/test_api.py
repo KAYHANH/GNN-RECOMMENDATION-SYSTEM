@@ -38,6 +38,7 @@ class FashionApiTests(unittest.TestCase):
         self.assertIn("snapshot", payload)
         self.assertIn("engines", payload["snapshot"])
         self.assertIn("catalog", payload["snapshot"])
+        self.assertIn("images_ready", payload["snapshot"]["artifacts"])
 
     def test_recommend_endpoint_returns_items_and_meta(self) -> None:
         response = self.client.get("/recommend/demo-customer?k=3&mode=hybrid")
@@ -60,6 +61,10 @@ class FashionApiTests(unittest.TestCase):
         self.assertEqual(payload["query"], "black dress")
         self.assertLessEqual(len(payload["results"]), 2)
         self.assertIn("meta", payload)
+
+    def test_catalog_image_returns_not_found_without_downloaded_images(self) -> None:
+        response = self.client.get("/catalog/images/0926246001")
+        self.assertEqual(response.status_code, 404)
 
     def test_explain_endpoint_returns_reasons_and_meta(self) -> None:
         response = self.client.get("/explain/demo-customer/0926246001")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -77,6 +78,7 @@ class RecommenderService:
         return {
             "articles_ready": self.settings.articles_path.exists(),
             "transactions_ready": self.settings.transactions_path.exists(),
+            "images_ready": self.settings.raw_images_dir.exists(),
             "semantic_index_ready": self.settings.semantic_index_path.exists(),
             "semantic_ids_ready": self.settings.semantic_ids_path.exists(),
             "user_embeddings_ready": self.settings.user_embeddings_path.exists(),
@@ -95,6 +97,11 @@ class RecommenderService:
             if not self.transactions_df.empty and "customer_id" in self.transactions_df.columns
             else 0
         )
+        image_count = (
+            int(self.articles_df["image_available"].fillna(False).astype(bool).sum())
+            if "image_available" in self.articles_df.columns
+            else 0
+        )
         sample_data_active = not self.settings.articles_path.exists() or not self.settings.transactions_path.exists()
 
         return {
@@ -109,6 +116,7 @@ class RecommenderService:
                 "article_count": article_count,
                 "interaction_count": interaction_count,
                 "customer_count": customer_count,
+                "image_count": image_count,
                 "sample_data_active": sample_data_active,
             },
         }
@@ -121,8 +129,42 @@ class RecommenderService:
 
     def _load_articles(self) -> pd.DataFrame:
         if self.settings.articles_path.exists():
-            return pd.read_csv(self.settings.articles_path, dtype={"article_id": str})
-        return pd.DataFrame(SAMPLE_CATALOG)
+            frame = pd.read_csv(self.settings.articles_path, dtype={"article_id": str})
+        else:
+            frame = pd.DataFrame(SAMPLE_CATALOG)
+
+        frame["article_id"] = frame["article_id"].astype(str).str.zfill(10)
+        return self._with_image_columns(frame)
+
+    def _with_image_columns(self, frame: pd.DataFrame) -> pd.DataFrame:
+        enriched = frame.copy()
+
+        if "image_relative_path" not in enriched.columns:
+            enriched["image_relative_path"] = enriched["article_id"].astype(str).map(self._relative_image_path)
+
+        if "image_local_path" not in enriched.columns:
+            if self.settings.raw_images_dir.exists():
+                enriched["image_local_path"] = enriched["image_relative_path"].map(
+                    lambda relative_path: str((self.settings.raw_images_dir / relative_path).resolve())
+                    if (self.settings.raw_images_dir / relative_path).exists()
+                    else ""
+                )
+            else:
+                enriched["image_local_path"] = ""
+
+        if "image_available" not in enriched.columns:
+            enriched["image_available"] = enriched["image_local_path"].astype(str).str.len() > 0
+
+        return enriched
+
+    @staticmethod
+    def _normalize_article_id(article_id: str | int) -> str:
+        return str(article_id).strip().zfill(10)
+
+    @classmethod
+    def _relative_image_path(cls, article_id: str | int) -> str:
+        normalized_article_id = cls._normalize_article_id(article_id)
+        return f"{normalized_article_id[:3]}/{normalized_article_id}.jpg"
 
     def _load_transactions(self) -> pd.DataFrame:
         if self.settings.transactions_path.exists():
@@ -188,11 +230,37 @@ class RecommenderService:
             return None
 
     def _catalog_lookup(self, article_id: str) -> dict[str, Any]:
-        matches = self.articles_df[self.articles_df["article_id"] == str(article_id)]
+        normalized_article_id = self._normalize_article_id(article_id)
+        matches = self.articles_df[self.articles_df["article_id"] == normalized_article_id]
         if matches.empty:
-            return {}
+            return {
+                "article_id": normalized_article_id,
+                "image_relative_path": self._relative_image_path(normalized_article_id),
+                "image_available": False,
+            }
         row = matches.iloc[0].to_dict()
         return {key: value for key, value in row.items() if pd.notna(value)}
+
+    def article_image_path(self, article_id: str) -> Path | None:
+        article = self._catalog_lookup(article_id)
+        local_path = article.get("image_local_path")
+
+        if isinstance(local_path, str) and local_path:
+            path = Path(local_path)
+            if path.exists():
+                return path
+
+        relative_path = article.get("image_relative_path")
+        if isinstance(relative_path, str) and relative_path:
+            candidate = self.settings.raw_images_dir / relative_path
+            if candidate.exists():
+                return candidate
+
+        fallback = self.settings.raw_images_dir / self._relative_image_path(article_id)
+        if fallback.exists():
+            return fallback
+
+        return None
 
     def _fallback_search(self, query: str, k: int) -> list[RecommendationCandidate]:
         query_tokens = set(query.lower().split())

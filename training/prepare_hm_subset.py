@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from training.prepare_articles import TEXT_COLUMNS, create_embedding_text
+from training.prepare_articles import TEXT_COLUMNS, attach_image_columns, create_embedding_text, normalize_article_id
 
 
 CUSTOMER_FILL_DEFAULTS = {
@@ -18,9 +18,15 @@ CUSTOMER_FILL_DEFAULTS = {
 }
 
 
-def prepare_articles(articles_path: str | Path, article_ids: set[str]) -> pd.DataFrame:
+def prepare_articles(
+    articles_path: str | Path,
+    article_ids: set[str],
+    images_dir: str | Path | None = None,
+) -> pd.DataFrame:
     articles_df = pd.read_csv(articles_path, dtype={"article_id": str})
-    articles_df = articles_df[articles_df["article_id"].astype(str).isin(article_ids)].copy()
+    normalized_ids = {normalize_article_id(article_id) for article_id in article_ids}
+    articles_df["article_id"] = articles_df["article_id"].astype(str).map(normalize_article_id)
+    articles_df = articles_df[articles_df["article_id"].astype(str).isin(normalized_ids)].copy()
 
     for column in TEXT_COLUMNS:
         if column not in articles_df.columns:
@@ -28,7 +34,7 @@ def prepare_articles(articles_path: str | Path, article_ids: set[str]) -> pd.Dat
         articles_df[column] = articles_df[column].fillna("")
 
     articles_df["text_for_embedding"] = articles_df.apply(create_embedding_text, axis=1)
-    return articles_df
+    return attach_image_columns(articles_df, images_dir=images_dir)
 
 
 def prepare_customers(customers_path: str | Path, customer_ids: set[str]) -> pd.DataFrame:
@@ -89,6 +95,11 @@ def main() -> None:
         default="",
         help="Optional filename prefix such as 'full_' to keep subset and full outputs side by side.",
     )
+    parser.add_argument(
+        "--images-dir",
+        default=None,
+        help="Optional path to the Kaggle H&M images directory so cleaned outputs include image metadata.",
+    )
     args = parser.parse_args()
 
     requested_days = args.days if args.mode == "subset" else 0
@@ -96,7 +107,7 @@ def main() -> None:
     article_ids = set(selected_transactions["article_id"].astype(str).unique())
     customer_ids = set(selected_transactions["customer_id"].astype(str).unique())
 
-    articles_df = prepare_articles(args.articles, article_ids)
+    articles_df = prepare_articles(args.articles, article_ids, images_dir=args.images_dir)
     customers_df = prepare_customers(args.customers, customer_ids)
 
     filtered_transactions = selected_transactions[

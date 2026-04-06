@@ -28,6 +28,7 @@ class ApiInfo(BaseModel):
 class ArtifactStatus(BaseModel):
     articles_ready: bool
     transactions_ready: bool
+    images_ready: bool
     semantic_index_ready: bool
     semantic_ids_ready: bool
     user_embeddings_ready: bool
@@ -48,6 +49,7 @@ class CatalogStatus(BaseModel):
     article_count: int
     interaction_count: int
     customer_count: int
+    image_count: int
     sample_data_active: bool
 
 

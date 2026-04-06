@@ -69,6 +69,7 @@ python -m training.prepare_hm_subset `
   --articles data\raw\articles.csv `
   --customers data\raw\customers.csv `
   --transactions data\raw\transactions_train.csv `
+  --images-dir data\raw\images `
   --output-dir data `
   --mode subset `
   --days 14
@@ -89,6 +90,7 @@ python -m training.prepare_hm_subset `
   --articles data\raw\articles.csv `
   --customers data\raw\customers.csv `
   --transactions data\raw\transactions_train.csv `
+  --images-dir data\raw\images `
   --output-dir data `
   --mode full `
   --output-prefix full_
@@ -136,8 +138,31 @@ If you only have the original Kaggle `articles.csv`, convert it to the expected 
 ```powershell
 python training\prepare_articles.py `
   --input data\raw\articles.csv `
+  --images-dir data\raw\images `
   --output data\articles_cleaned.csv
 ```
+
+## H&M Images
+
+The Kaggle competition also provides product images. Put the extracted image folders under:
+
+```text
+data/raw/images/
+```
+
+The project resolves article images using the H&M competition folder pattern:
+
+```text
+data/raw/images/<first-3-digits-of-article-id>/<article-id>.jpg
+```
+
+Example:
+
+```text
+data/raw/images/011/0112679048.jpg
+```
+
+Once the images are present, rerun the article preparation step so the cleaned catalog includes image metadata, and the API will serve them automatically at `/catalog/images/{article_id}`.
 
 ## Train LightGCN
 

@@ -6,7 +6,8 @@ from time import perf_counter
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.app.config import Settings, get_settings
@@ -126,6 +127,17 @@ async def readiness(
         api=build_api_info(app_settings),
         snapshot=ServiceSnapshot.model_validate(service.service_snapshot()),
     )
+
+
+@app.get("/catalog/images/{article_id}", tags=["Catalog"])
+async def catalog_image(
+    article_id: str,
+    service: Annotated[RecommenderService, Depends(get_recommender_service)],
+):
+    image_path = service.article_image_path(article_id)
+    if image_path is None:
+        raise HTTPException(status_code=404, detail="Image not found for the requested article.")
+    return FileResponse(image_path, media_type="image/jpeg")
 
 
 @app.get("/recommend/{customer_id}", response_model=RecommendationResponse, tags=["Recommendations"])

@@ -17,6 +17,9 @@ class PrepareHmSubsetTests(unittest.TestCase):
         self.articles_path = self.base_path / "articles.csv"
         self.customers_path = self.base_path / "customers.csv"
         self.transactions_path = self.base_path / "transactions.csv"
+        self.images_dir = self.base_path / "images"
+        (self.images_dir / "000").mkdir(parents=True, exist_ok=True)
+        (self.images_dir / "000" / "0000000001.jpg").write_bytes(b"fake-image")
 
         pd.DataFrame(
             [
@@ -53,13 +56,20 @@ class PrepareHmSubsetTests(unittest.TestCase):
         self.assertEqual(len(filtered), 2)
 
     def test_prepare_articles_and_customers_fill_defaults(self) -> None:
-        articles = prepare_articles(self.articles_path, {"0000000001"})
+        articles = prepare_articles(self.articles_path, {"0000000001"}, images_dir=self.images_dir)
         customers = prepare_customers(self.customers_path, {"c1"})
 
         self.assertEqual(len(articles), 1)
         self.assertIn("text_for_embedding", articles.columns)
         self.assertEqual(customers.iloc[0]["club_member_status"], "UNKNOWN")
         self.assertEqual(customers.iloc[0]["age"], -1)
+        self.assertTrue(bool(articles.iloc[0]["image_available"]))
+        self.assertEqual(articles.iloc[0]["image_relative_path"], "000/0000000001.jpg")
+
+    def test_prepare_articles_without_images_marks_unavailable(self) -> None:
+        articles = prepare_articles(self.articles_path, {"0000000002"}, images_dir=self.images_dir)
+        self.assertFalse(bool(articles.iloc[0]["image_available"]))
+        self.assertEqual(articles.iloc[0]["image_local_path"], "")
 
     def test_output_paths_with_prefix(self) -> None:
         articles_output, customers_output, transactions_output = output_paths(self.base_path, "full_")
@@ -70,4 +80,3 @@ class PrepareHmSubsetTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

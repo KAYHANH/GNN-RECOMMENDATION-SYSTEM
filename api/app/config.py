@@ -30,6 +30,7 @@ class Settings:
     log_level: str
     artifacts_dir: Path
     data_dir: Path
+    raw_images_dir: Path
     semantic_model_name: str
     cors_origins: tuple[str, ...]
     docs_enabled: bool
@@ -88,6 +89,7 @@ def get_settings() -> Settings:
         log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
         artifacts_dir=PROJECT_ROOT / os.getenv("ARTIFACTS_DIR", "artifacts"),
         data_dir=PROJECT_ROOT / os.getenv("DATA_DIR", "data"),
+        raw_images_dir=PROJECT_ROOT / os.getenv("RAW_IMAGES_DIR", "data/raw/images"),
         semantic_model_name=os.getenv("SEMANTIC_MODEL_NAME", "all-MiniLM-L6-v2"),
         cors_origins=_get_csv(
             "CORS_ORIGINS",

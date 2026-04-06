@@ -2,28 +2,22 @@ import type { ReactNode } from "react";
 
 type SectionShellProps = {
   title: string;
-  caption: string;
-  description: string;
-  aside?: ReactNode;
-  className?: string;
+  subtitle: string;
+  meta?: string;
   children: ReactNode;
 };
 
-export function SectionShell({ title, caption, description, aside, className, children }: SectionShellProps) {
-  const sectionClassName = ["studio-section", className].filter(Boolean).join(" ");
-
+export function SectionShell({ title, subtitle, meta, children }: SectionShellProps) {
   return (
-    <section className={sectionClassName}>
-      <header className="studio-section__head">
-        <div className="studio-section__title-block">
-          <p className="studio-section__caption">{caption}</p>
-          <h3>{title}</h3>
-          <p className="studio-section__description">{description}</p>
+    <section className="panel-section">
+      <header className="panel-section__header">
+        <div>
+          <p className="panel-section__subtitle">{subtitle}</p>
+          <h2>{title}</h2>
         </div>
-        {aside ? <div className="studio-section__aside">{aside}</div> : null}
+        {meta ? <span className="panel-section__meta">{meta}</span> : null}
       </header>
-
-      <div>{children}</div>
+      {children}
     </section>
   );
 }
