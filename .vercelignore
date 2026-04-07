@@ -7,6 +7,7 @@ paper
 tests
 training
 data/raw
+data/transactions_cleaned.csv
 data/full_articles_cleaned.csv
 data/full_customers_cleaned.csv
 data/full_transactions_cleaned.csv

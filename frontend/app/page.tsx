@@ -96,12 +96,27 @@ const MODE_DETAILS: Record<RecommendationMode, string> = {
   semantic: "Bias toward product language and metadata similarity."
 };
 
-async function getJson<T>(path: string): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, { cache: "no-store" });
-  if (!response.ok) {
-    throw new Error(`Request failed with status ${response.status}`);
+async function getJson<T>(path: string, timeoutMs = 60000): Promise<T> {
+  const controller = new AbortController();
+  const timeoutHandle = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${API_BASE_URL}${path}`, {
+      cache: "no-store",
+      signal: controller.signal
+    }).catch((error: unknown) => {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        throw new Error("The request timed out. Please try again.");
+      }
+      throw error;
+    });
+
+    if (!response.ok) {
+      throw new Error(`Request failed with status ${response.status}`);
+    }
+    return response.json() as Promise<T>;
+  } finally {
+    window.clearTimeout(timeoutHandle);
   }
-  return response.json() as Promise<T>;
 }
 
 function formatNumber(value: number | undefined): string {
@@ -158,7 +173,8 @@ function RunwayProduct({
 
 export default function Page() {
   const [draftQuery, setDraftQuery] = useState("black summer dress");
-  const [activeQuery, setActiveQuery] = useState("black summer dress");
+  const [activeQuery, setActiveQuery] = useState("");
+  const [searchToken, setSearchToken] = useState(0);
   const [mode, setMode] = useState<RecommendationMode>("hybrid");
   const [searchResults, setSearchResults] = useState<RecommendationItem[]>([]);
   const [anchorItem, setAnchorItem] = useState<RecommendationItem | null>(null);
@@ -171,8 +187,57 @@ export default function Page() {
   const [isLoadingRelated, setIsLoadingRelated] = useState(false);
   const [isLoadingReasons, setIsLoadingReasons] = useState(false);
 
-  const discoveryRequestRef = useRef(0);
+  const searchRequestRef = useRef(0);
+  const relatedRequestRef = useRef(0);
   const reasonRequestRef = useRef(0);
+
+  async function loadRelatedForItem(
+    item: RecommendationItem,
+    options?: {
+      searchRequestId?: number;
+      statusText?: string;
+    }
+  ) {
+    const relatedRequestId = ++relatedRequestRef.current;
+
+    try {
+      setAnchorItem(item);
+      setIsLoadingRelated(true);
+      setStatus(
+        options?.statusText ?? `Building a related set from ${getItemText(item, "prod_name", item.article_id)}...`
+      );
+
+      const payload = await getJson<RelatedResponse>(
+        `/related/${encodeURIComponent(item.article_id)}?k=8&mode=${encodeURIComponent(mode)}`,
+        120000
+      );
+
+      if (options?.searchRequestId && options.searchRequestId !== searchRequestRef.current) {
+        return;
+      }
+
+      if (relatedRequestId !== relatedRequestRef.current) {
+        return;
+      }
+
+      startTransition(() => {
+        setAnchorItem(payload.anchor ?? item);
+        setRecommendations(payload.recommendations);
+        setSelectedRecommendation(payload.recommendations[0] ?? null);
+        setReasons([]);
+        setSnapshot(payload.meta.snapshot);
+        setStatus(`Loaded ${payload.recommendations.length} recommendations from the selected anchor.`);
+      });
+    } catch (error) {
+      if (relatedRequestId === relatedRequestRef.current) {
+        setStatus(error instanceof Error ? error.message : "Failed to load related products.");
+      }
+    } finally {
+      if (relatedRequestId === relatedRequestRef.current) {
+        setIsLoadingRelated(false);
+      }
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -201,48 +266,76 @@ export default function Page() {
       return;
     }
 
-    const requestId = ++discoveryRequestRef.current;
+    const requestId = ++searchRequestRef.current;
 
-    async function loadDiscovery() {
+    async function loadSearch() {
       try {
         setIsSearching(true);
         setStatus(`Searching the catalog for "${activeQuery}"...`);
+        setSearchResults([]);
+        setRecommendations([]);
+        setSelectedRecommendation(null);
+        setReasons([]);
 
-        const [searchPayload, discoverPayload] = await Promise.all([
-          getJson<SearchResponse>(`/search?q=${encodeURIComponent(activeQuery)}&k=8`),
-          getJson<DiscoverResponse>(`/discover?q=${encodeURIComponent(activeQuery)}&k=8&mode=${encodeURIComponent(mode)}`)
-        ]);
+        const searchPayload = await getJson<SearchResponse>(`/search?q=${encodeURIComponent(activeQuery)}&k=8`, 90000);
 
-        if (requestId !== discoveryRequestRef.current) {
+        if (requestId !== searchRequestRef.current) {
           return;
         }
 
         startTransition(() => {
           setSearchResults(searchPayload.results);
-          setAnchorItem(discoverPayload.anchor);
-          setRecommendations(discoverPayload.recommendations);
-          setSelectedRecommendation(discoverPayload.recommendations[0] ?? null);
-          setReasons([]);
-          setSnapshot(discoverPayload.meta.snapshot);
+          setSnapshot(searchPayload.meta.snapshot);
+        });
+
+        const defaultAnchor = searchPayload.results[0] ?? null;
+        if (!defaultAnchor) {
+          startTransition(() => {
+            setAnchorItem(null);
+            setStatus(`No anchor product found for "${activeQuery}".`);
+          });
+          return;
+        }
+
+        startTransition(() => {
+          setAnchorItem(defaultAnchor);
           setStatus(
-            discoverPayload.anchor
-              ? `Anchor locked to ${getItemText(discoverPayload.anchor, "prod_name", discoverPayload.anchor.article_id)}.`
-              : `No anchor product found for "${activeQuery}".`
+            `Found ${searchPayload.results.length} matches for "${activeQuery}". Building recommendations from ${getItemText(defaultAnchor, "prod_name", defaultAnchor.article_id)}...`
           );
         });
+
+        void loadRelatedForItem(defaultAnchor, {
+          searchRequestId: requestId,
+          statusText: `Building recommendations from ${getItemText(defaultAnchor, "prod_name", defaultAnchor.article_id)}...`
+        });
       } catch (error) {
-        if (requestId === discoveryRequestRef.current) {
+        if (requestId === searchRequestRef.current) {
           setStatus(error instanceof Error ? error.message : "Discovery request failed.");
         }
       } finally {
-        if (requestId === discoveryRequestRef.current) {
+        if (requestId === searchRequestRef.current) {
           setIsSearching(false);
         }
       }
     }
 
-    loadDiscovery();
-  }, [activeQuery, mode]);
+    loadSearch();
+  }, [activeQuery, searchToken]);
+
+  useEffect(() => {
+    if (!activeQuery.trim()) {
+      return;
+    }
+
+    const nextAnchor = anchorItem ?? searchResults[0];
+    if (!nextAnchor) {
+      return;
+    }
+
+    void loadRelatedForItem(nextAnchor, {
+      statusText: `Refreshing recommendations in ${mode} mode...`
+    });
+  }, [mode]);
 
   useEffect(() => {
     if (!anchorItem || !selectedRecommendation) {
@@ -291,35 +384,17 @@ export default function Page() {
       return;
     }
     setActiveQuery(nextQuery);
+    setSearchToken((current) => current + 1);
   }
 
   async function handleAnchorPick(item: RecommendationItem) {
-    try {
-      setIsLoadingRelated(true);
-      setStatus(`Building a related set from ${getItemText(item, "prod_name", item.article_id)}...`);
-
-      const payload = await getJson<RelatedResponse>(
-        `/related/${encodeURIComponent(item.article_id)}?k=8&mode=${encodeURIComponent(mode)}`
-      );
-
-      startTransition(() => {
-        setAnchorItem(payload.anchor ?? item);
-        setRecommendations(payload.recommendations);
-        setSelectedRecommendation(payload.recommendations[0] ?? null);
-        setReasons([]);
-        setSnapshot(payload.meta.snapshot);
-        setStatus(`Loaded ${payload.recommendations.length} recommendations from the selected anchor.`);
-      });
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Failed to load related products.");
-    } finally {
-      setIsLoadingRelated(false);
-    }
+    await loadRelatedForItem(item);
   }
 
   function applyQuickQuery(query: string) {
     setDraftQuery(query);
     setActiveQuery(query);
+    setSearchToken((current) => current + 1);
   }
 
   const selectedName = selectedRecommendation

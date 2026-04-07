@@ -24,6 +24,7 @@ artifacts/*
 !artifacts/semantic_vectorizer.pkl
 !artifacts/user_embeddings.npy
 !artifacts/user_mapping.json
+!artifacts/runtime_stats.json
 data/*
 !data/.gitkeep
 !data/articles_cleaned.csv

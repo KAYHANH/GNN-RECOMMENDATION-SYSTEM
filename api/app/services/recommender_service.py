@@ -4,6 +4,7 @@ from collections import defaultdict
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
+import json
 
 import pandas as pd
 
@@ -65,11 +66,52 @@ class RecommenderService:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.articles_df = self._load_articles()
-        self.transactions_df = self._load_transactions()
-        self.gnn_engine = self._load_gnn_engine()
-        self.semantic_engine = self._load_semantic_engine()
-        self.reranker = self._load_reranker()
-        self.hybrid = HybridRecommender(
+        self.article_records = self.articles_df.to_dict(orient="records")
+        self.catalog_by_id = {
+            str(row["article_id"]).zfill(10): {key: value for key, value in row.items() if pd.notna(value)}
+            for row in self.article_records
+        }
+        self.runtime_stats = self._load_runtime_stats()
+        self._transactions_df: pd.DataFrame | None = None
+        self._transactions_loaded = False
+        self._gnn_engine: LightGCNRecommender | None = None
+        self._gnn_engine_loaded = False
+        self._semantic_engine: SemanticEngine | None = None
+        self._semantic_engine_loaded = False
+        self._reranker: LightGBMReranker | None = None
+        self._reranker_loaded = False
+
+    @property
+    def transactions_df(self) -> pd.DataFrame:
+        if not self._transactions_loaded:
+            self._transactions_df = self._load_transactions()
+            self._transactions_loaded = True
+        return self._transactions_df if self._transactions_df is not None else pd.DataFrame()
+
+    @property
+    def gnn_engine(self) -> LightGCNRecommender | None:
+        if not self._gnn_engine_loaded:
+            self._gnn_engine = self._load_gnn_engine()
+            self._gnn_engine_loaded = True
+        return self._gnn_engine
+
+    @property
+    def semantic_engine(self) -> SemanticEngine | None:
+        if not self._semantic_engine_loaded:
+            self._semantic_engine = self._load_semantic_engine()
+            self._semantic_engine_loaded = True
+        return self._semantic_engine
+
+    @property
+    def reranker(self) -> LightGBMReranker | None:
+        if not self._reranker_loaded:
+            self._reranker = self._load_reranker()
+            self._reranker_loaded = True
+        return self._reranker
+
+    @property
+    def hybrid(self) -> HybridRecommender:
+        return HybridRecommender(
             gnn_engine=self.gnn_engine,
             semantic_engine=self.semantic_engine,
             reranker=self.reranker,
@@ -90,14 +132,17 @@ class RecommenderService:
         }
 
     def service_snapshot(self) -> dict[str, Any]:
-        reranker_ready = bool(self.reranker and getattr(self.reranker, "is_trained", False))
-        article_count = int(len(self.articles_df))
-        interaction_count = int(len(self.transactions_df))
-        customer_count = (
-            int(self.transactions_df["customer_id"].astype(str).nunique())
-            if not self.transactions_df.empty and "customer_id" in self.transactions_df.columns
-            else 0
+        artifact_status = self.artifact_status()
+        graph_ready = (
+            artifact_status["user_embeddings_ready"]
+            and artifact_status["item_embeddings_ready"]
+            and artifact_status["user_mapping_ready"]
+            and artifact_status["item_mapping_ready"]
         )
+        semantic_ready = artifact_status["semantic_index_ready"] and artifact_status["semantic_ids_ready"]
+        article_count = int(len(self.articles_df))
+        interaction_count = int(self.runtime_stats.get("interaction_count", 0))
+        customer_count = int(self.runtime_stats.get("customer_count", 0))
         image_count = (
             int(self.articles_df["image_available"].fillna(False).astype(bool).sum())
             if "image_available" in self.articles_df.columns
@@ -106,12 +151,12 @@ class RecommenderService:
         sample_data_active = not self.settings.articles_path.exists() or not self.settings.transactions_path.exists()
 
         return {
-            "artifacts": self.artifact_status(),
+            "artifacts": artifact_status,
             "engines": {
-                "graph_ready": self.gnn_engine is not None,
-                "semantic_ready": self.semantic_engine is not None,
-                "reranker_ready": reranker_ready,
-                "fallback_active": sample_data_active or self.gnn_engine is None or self.semantic_engine is None,
+                "graph_ready": graph_ready,
+                "semantic_ready": semantic_ready,
+                "reranker_ready": artifact_status["reranker_ready"],
+                "fallback_active": sample_data_active or not graph_ready or not semantic_ready,
             },
             "catalog": {
                 "article_count": article_count,
@@ -127,6 +172,19 @@ class RecommenderService:
         if snapshot["engines"]["fallback_active"]:
             return "degraded"
         return "ready"
+
+    def _load_runtime_stats(self) -> dict[str, int]:
+        if self.settings.runtime_stats_path.exists():
+            try:
+                with open(self.settings.runtime_stats_path, "r", encoding="utf-8") as handle:
+                    payload = json.load(handle)
+                return {
+                    "interaction_count": int(payload.get("interaction_count", 0)),
+                    "customer_count": int(payload.get("customer_count", 0)),
+                }
+            except Exception:
+                return {}
+        return {}
 
     def _load_articles(self) -> pd.DataFrame:
         if self.settings.articles_path.exists():
@@ -179,6 +237,9 @@ class RecommenderService:
         return f"{normalized_article_id[:3]}/{normalized_article_id}.jpg"
 
     def _load_transactions(self) -> pd.DataFrame:
+        if not self.settings.load_transactions_at_runtime:
+            return pd.DataFrame(columns=["customer_id", "article_id", "t_dat"])
+
         if self.settings.transactions_path.exists():
             frame = pd.read_csv(
                 self.settings.transactions_path,
@@ -213,7 +274,11 @@ class RecommenderService:
                 user_mapping_path=self.settings.user_mapping_path,
                 item_mapping_path=self.settings.item_mapping_path,
                 articles_path=self.settings.articles_path if self.settings.articles_path.exists() else None,
-                interactions_path=self.settings.transactions_path if self.settings.transactions_path.exists() else None,
+                interactions_path=(
+                    self.settings.transactions_path
+                    if self.settings.load_transactions_at_runtime and self.settings.transactions_path.exists()
+                    else None
+                ),
             )
         except Exception:
             return None
@@ -243,15 +308,14 @@ class RecommenderService:
 
     def _catalog_lookup(self, article_id: str) -> dict[str, Any]:
         normalized_article_id = self._normalize_article_id(article_id)
-        matches = self.articles_df[self.articles_df["article_id"] == normalized_article_id]
-        if matches.empty:
+        metadata = self.catalog_by_id.get(normalized_article_id)
+        if metadata is None:
             return {
                 "article_id": normalized_article_id,
                 "image_relative_path": self._relative_image_path(normalized_article_id),
                 "image_available": False,
             }
-        row = matches.iloc[0].to_dict()
-        return {key: value for key, value in row.items() if pd.notna(value)}
+        return dict(metadata)
 
     def article_image_path(self, article_id: str) -> Path | None:
         article = self._catalog_lookup(article_id)
@@ -544,7 +608,7 @@ class RecommenderService:
         department = str(target.get("department_name", "")).strip().lower()
 
         candidates: list[RecommendationCandidate] = []
-        for row in self.articles_df.to_dict(orient="records"):
+        for row in self.article_records:
             candidate_article_id = str(row.get("article_id", "")).zfill(10)
             if candidate_article_id == normalized_article_id:
                 continue
@@ -577,7 +641,7 @@ class RecommenderService:
         query_tokens = set(query.lower().split())
         candidates: list[RecommendationCandidate] = []
 
-        for row in self.articles_df.to_dict(orient="records"):
+        for row in self.article_records:
             haystack = " ".join(str(value).lower() for value in row.values())
             overlap = len(query_tokens & set(haystack.split()))
             if overlap == 0:
@@ -600,7 +664,7 @@ class RecommenderService:
         )
 
         candidates: list[RecommendationCandidate] = []
-        for rank, row in enumerate(self.articles_df.to_dict(orient="records"), start=1):
+        for rank, row in enumerate(self.article_records, start=1):
             article_id = str(row["article_id"])
             if article_id in history_ids:
                 continue

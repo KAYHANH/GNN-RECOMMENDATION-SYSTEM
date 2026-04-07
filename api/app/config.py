@@ -35,6 +35,7 @@ class Settings:
     semantic_model_name: str
     cors_origins: tuple[str, ...]
     docs_enabled: bool
+    load_transactions_at_runtime: bool
 
     @property
     def docs_url(self) -> str | None:
@@ -59,6 +60,10 @@ class Settings:
     @property
     def semantic_ids_path(self) -> Path:
         return self.artifacts_dir / "article_ids.csv"
+
+    @property
+    def runtime_stats_path(self) -> Path:
+        return self.artifacts_dir / "runtime_stats.json"
 
     @property
     def user_embeddings_path(self) -> Path:
@@ -101,4 +106,8 @@ def get_settings() -> Settings:
             "*",
         ),
         docs_enabled=_get_bool("ENABLE_DOCS", True),
+        load_transactions_at_runtime=_get_bool(
+            "LOAD_TRANSACTIONS_AT_RUNTIME",
+            os.getenv("APP_ENV", "development").lower() != "production",
+        ),
     )
