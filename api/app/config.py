@@ -98,7 +98,7 @@ def get_settings() -> Settings:
         semantic_model_name=os.getenv("SEMANTIC_MODEL_NAME", "all-MiniLM-L6-v2"),
         cors_origins=_get_csv(
             "CORS_ORIGINS",
-            "http://localhost:3000,http://127.0.0.1:3000",
+            "*",
         ),
         docs_enabled=_get_bool("ENABLE_DOCS", True),
     )

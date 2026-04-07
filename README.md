@@ -95,6 +95,13 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+Use `requirements.txt` for serving the API, local inspection, and the Vercel backend deployment.
+Use `requirements-train.txt` when you want the full training stack locally:
+
+```powershell
+pip install -r requirements-train.txt
+```
+
 ## Dataset Modes
 
 The project now supports two data modes:
@@ -292,6 +299,56 @@ Set `NEXT_PUBLIC_API_BASE_URL` in `frontend/.env.example` or `frontend/.env.loca
 - anchor selection and recommendation selection as separate actions
 - model mode indicators based on `/health/ready`
 - responsive layout for desktop and mobile
+
+## Vercel Deployment
+
+The repo is now structured to demo the real search-to-recommend flow on Vercel with the UI and model-backed API running together as two projects from the same GitHub repository.
+
+### Backend project
+
+- Root directory: repo root
+- Framework/runtime: Python / FastAPI
+- Entry point: `api/index.py`
+- Config: `vercel.json`
+
+The backend bundle now includes the exact runtime files needed for live recommendations:
+
+- `data/articles_cleaned.csv`
+- `data/transactions_cleaned.csv`
+- `artifacts/article_ids.csv`
+- `artifacts/semantic_faiss_index.bin`
+- `artifacts/semantic_vectorizer.pkl`
+- `artifacts/semantic_projector.pkl`
+- `artifacts/user_embeddings.npy`
+- `artifacts/item_embeddings.npy`
+- `artifacts/user_mapping.json`
+- `artifacts/item_mapping.json`
+
+Recommended backend environment variables:
+
+```text
+APP_ENV=production
+CORS_ORIGINS=*
+ENABLE_DOCS=true
+```
+
+### Frontend project
+
+- Root directory: `frontend`
+- Framework: Next.js
+- Required environment variable:
+
+```text
+NEXT_PUBLIC_API_BASE_URL=https://<your-backend-project>.vercel.app
+```
+
+### What this gives you
+
+- the same search UI you have locally
+- live semantic search over the cleaned H&M catalog
+- live graph-backed related products from the saved LightGCN artifacts
+- public product images through the image fallback feed
+- a shareable frontend URL for demos
 
 ## Local Quality Checks
 
