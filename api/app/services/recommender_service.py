@@ -148,7 +148,8 @@ class RecommenderService:
             if "image_available" in self.articles_df.columns
             else 0
         )
-        sample_data_active = not self.settings.articles_path.exists() or not self.settings.transactions_path.exists()
+        transactions_available = self.settings.transactions_path.exists() or self.settings.runtime_stats_path.exists()
+        sample_data_active = not self.settings.articles_path.exists() or not transactions_available
 
         return {
             "artifacts": artifact_status,
@@ -259,15 +260,20 @@ class RecommenderService:
 
     def _load_gnn_engine(self) -> LightGCNRecommender | None:
         required_paths = [
-            self.settings.user_embeddings_path,
             self.settings.item_embeddings_path,
-            self.settings.user_mapping_path,
             self.settings.item_mapping_path,
         ]
         if not all(path.exists() for path in required_paths):
             return None
 
         try:
+            if not self.settings.load_transactions_at_runtime:
+                return LightGCNRecommender.from_item_artifacts(
+                    item_embeddings_path=self.settings.item_embeddings_path,
+                    item_mapping_path=self.settings.item_mapping_path,
+                    articles_path=self.settings.articles_path if self.settings.articles_path.exists() else None,
+                )
+
             return LightGCNRecommender.from_artifacts(
                 user_embeddings_path=self.settings.user_embeddings_path,
                 item_embeddings_path=self.settings.item_embeddings_path,
@@ -284,6 +290,9 @@ class RecommenderService:
             return None
 
     def _load_semantic_engine(self) -> SemanticEngine | None:
+        if not self.settings.load_transactions_at_runtime:
+            return None
+
         required_paths = [self.settings.semantic_index_path, self.settings.semantic_ids_path]
         if not all(path.exists() for path in required_paths):
             return None
@@ -420,17 +429,17 @@ class RecommenderService:
         return ". ".join(str(field).strip() for field in fields if str(field).strip())
 
     def _semantic_related(self, article_id: str, k: int) -> list[RecommendationCandidate]:
-        if self.semantic_engine is None:
-            return []
-
         target_text = self._target_profile_text(article_id)
         if not target_text:
             return []
 
-        try:
-            results = self.semantic_engine.search(target_text, k=max(k * 4, 24))
-        except Exception:
-            return []
+        if self.semantic_engine is None:
+            results = self._fallback_search(target_text, k=max(k * 4, 24))
+        else:
+            try:
+                results = self.semantic_engine.search(target_text, k=max(k * 4, 24))
+            except Exception:
+                results = self._fallback_search(target_text, k=max(k * 4, 24))
 
         normalized_article_id = self._normalize_article_id(article_id)
         filtered = [candidate for candidate in results if candidate.article_id != normalized_article_id]

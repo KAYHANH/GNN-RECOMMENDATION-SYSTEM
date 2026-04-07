@@ -150,6 +150,28 @@ class LightGCNRecommender:
         )
         return cls(artifacts=artifacts, articles_df=articles_df, interactions_df=interactions_df)
 
+    @classmethod
+    def from_item_artifacts(
+        cls,
+        *,
+        item_embeddings_path: str | Path,
+        item_mapping_path: str | Path,
+        articles_path: str | Path | None = None,
+    ) -> "LightGCNRecommender":
+        item_embeddings = np.load(item_embeddings_path)
+
+        with open(item_mapping_path, "r", encoding="utf-8") as handle:
+            item_mapping = {str(key): int(value) for key, value in json.load(handle).items()}
+
+        articles_df = pd.read_csv(articles_path, dtype={"article_id": str}) if articles_path else None
+        artifacts = LightGCNArtifacts(
+            user_embeddings=np.empty((0, item_embeddings.shape[1]), dtype=item_embeddings.dtype),
+            item_embeddings=item_embeddings,
+            user_mapping={},
+            item_mapping=item_mapping,
+        )
+        return cls(artifacts=artifacts, articles_df=articles_df, interactions_df=None)
+
     @staticmethod
     def _normalize_article_frame(articles_df: pd.DataFrame | None) -> pd.DataFrame | None:
         if articles_df is None:
@@ -193,6 +215,8 @@ class LightGCNRecommender:
         return (matrix @ vector) / (matrix_norms * vector_norm)
 
     def _rank_for_user(self, customer_id: str) -> list[tuple[str, float]]:
+        if self.artifacts.user_embeddings.size == 0:
+            return []
         user_idx = self.artifacts.user_mapping.get(str(customer_id))
         if user_idx is None:
             return []
