@@ -55,6 +55,7 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--bpr-reg", type=float, default=1e-4)
     parser.add_argument("--test-weeks", type=int, default=4)
     parser.add_argument("--test-days", type=int, default=None)
     parser.add_argument("--samples-per-user", type=int, default=2)
@@ -77,7 +78,8 @@ def main() -> None:
         n_layers=args.n_layers,
     ).to(device)
     edge_index = edge_index.to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    # Keep optimizer decay off because BPR regularization is applied explicitly in the loss.
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=0.0)
 
     run_context = mlflow.start_run(run_name=f"lightgcn-bpr-{args.embedding_dim}d") if mlflow else None
 
@@ -89,6 +91,7 @@ def main() -> None:
                 "epochs": args.epochs,
                 "lr": args.lr,
                 "weight_decay": args.weight_decay,
+                "bpr_reg": args.bpr_reg,
                 "loss": "bpr",
                 "batch_size": args.batch_size,
                 "samples_per_user": args.samples_per_user,
@@ -125,7 +128,7 @@ def main() -> None:
                     user_embeddings[user_indices],
                     item_embeddings[pos_indices],
                     item_embeddings[neg_indices],
-                    reg=args.weight_decay,
+                    reg=args.bpr_reg,
                 )
                 loss.backward()
                 optimizer.step()

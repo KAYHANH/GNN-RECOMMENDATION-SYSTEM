@@ -381,6 +381,124 @@ class RecommenderService:
         except Exception:
             return []
 
+    def _metadata_similarity_value(self, anchor_article_id: str, candidate_article_id: str) -> float:
+        anchor = self._catalog_lookup(anchor_article_id)
+        candidate = self._catalog_lookup(candidate_article_id)
+        if not anchor or not candidate:
+            return 0.0
+
+        score = 0.0
+        if str(anchor.get("product_group_name", "")).strip().lower() == str(candidate.get("product_group_name", "")).strip().lower():
+            score += 1.0
+        if str(anchor.get("product_type_name", "")).strip().lower() == str(candidate.get("product_type_name", "")).strip().lower():
+            score += 0.8
+        if str(anchor.get("department_name", "")).strip().lower() == str(candidate.get("department_name", "")).strip().lower():
+            score += 0.5
+        if str(anchor.get("colour_group_name", "")).strip().lower() == str(candidate.get("colour_group_name", "")).strip().lower():
+            score += 0.3
+        if str(anchor.get("section_name", "")).strip().lower() == str(candidate.get("section_name", "")).strip().lower():
+            score += 0.2
+        return score
+
+    @staticmethod
+    def _normalized_score_map(candidates: list[RecommendationCandidate]) -> dict[str, float]:
+        if not candidates:
+            return {}
+
+        values = [float(candidate.score) for candidate in candidates]
+        min_value = min(values)
+        max_value = max(values)
+
+        if abs(max_value - min_value) < 1e-12:
+            return {candidate.article_id: 1.0 for candidate in candidates}
+
+        return {
+            candidate.article_id: (float(candidate.score) - min_value) / (max_value - min_value)
+            for candidate in candidates
+        }
+
+    def _filter_aligned_candidates(
+        self,
+        anchor_article_id: str,
+        candidates: list[RecommendationCandidate],
+        *,
+        minimum_similarity: float = 1.0,
+        min_keep: int = 6,
+    ) -> list[RecommendationCandidate]:
+        aligned = [
+            candidate
+            for candidate in candidates
+            if self._metadata_similarity_value(anchor_article_id, candidate.article_id) >= minimum_similarity
+        ]
+        return aligned if len(aligned) >= min_keep else candidates
+
+    def _rank_weighted_candidates(
+        self,
+        anchor_article_id: str,
+        *,
+        weighted_groups: list[tuple[list[RecommendationCandidate], float]],
+        metadata_weight: float = 0.0,
+        backfill_groups: list[list[RecommendationCandidate]] | None = None,
+    ) -> list[RecommendationCandidate]:
+        merged: dict[str, RecommendationCandidate] = {}
+        sources: dict[str, set[str]] = defaultdict(set)
+
+        for candidates, weight in weighted_groups:
+            score_map = self._normalized_score_map(candidates)
+            for candidate in candidates:
+                existing = merged.get(candidate.article_id)
+                if existing is None:
+                    existing = RecommendationCandidate(
+                        article_id=candidate.article_id,
+                        score=0.0,
+                        source=candidate.source,
+                        metadata=candidate.metadata,
+                        features=dict(candidate.features),
+                    )
+                    merged[candidate.article_id] = existing
+                else:
+                    existing.features.update(candidate.features)
+                    existing.metadata = existing.metadata or candidate.metadata
+
+                existing.score += weight * score_map.get(candidate.article_id, 0.0)
+                sources[candidate.article_id].add(candidate.source)
+
+        if metadata_weight > 0 and merged:
+            metadata_scores = {
+                article_id: self._metadata_similarity_value(anchor_article_id, article_id)
+                for article_id in merged
+            }
+            max_metadata_score = max(metadata_scores.values(), default=0.0)
+            if max_metadata_score > 0:
+                for article_id, bonus in metadata_scores.items():
+                    merged[article_id].score += metadata_weight * (bonus / max_metadata_score)
+
+        ordered = sorted(merged.values(), key=lambda candidate: candidate.score, reverse=True)
+
+        if backfill_groups:
+            seen = {candidate.article_id for candidate in ordered}
+            backfill_score = (ordered[-1].score if ordered else 0.0) - 1.0
+            for group in backfill_groups:
+                for candidate in group:
+                    if candidate.article_id in seen:
+                        continue
+                    seen.add(candidate.article_id)
+                    ordered.append(
+                        RecommendationCandidate(
+                            article_id=candidate.article_id,
+                            score=backfill_score,
+                            source=candidate.source,
+                            metadata=candidate.metadata,
+                            features=dict(candidate.features),
+                        )
+                    )
+                    backfill_score -= 1e-6
+
+        for candidate in ordered:
+            candidate.source = "+".join(sorted(sources.get(candidate.article_id, {candidate.source})))
+
+        return ordered
+
     def _co_purchase_related(self, article_id: str, k: int) -> list[RecommendationCandidate]:
         if self.transactions_df.empty:
             return []
@@ -537,27 +655,52 @@ class RecommenderService:
         return [self._candidate_to_dict(candidate) for candidate in results[:k]]
 
     def related(self, article_id: str, k: int = 12, mode: str = "hybrid") -> list[dict[str, Any]]:
-        semantic_candidates = self._semantic_related(article_id, k=max(k * 3, 18))
-        graph_candidates = self._graph_related(article_id, k=max(k * 3, 18))
-        co_purchase_candidates = self._co_purchase_related(article_id, k=max(k * 3, 18))
-        metadata_candidates = self._metadata_related(article_id, k=max(k * 3, 18))
+        semantic_candidates = self._semantic_related(article_id, k=max(k * 6, 48))
+        graph_candidates = self._graph_related(article_id, k=max(k * 8, 64))
+        co_purchase_candidates = self._co_purchase_related(article_id, k=max(k * 4, 24))
+        metadata_candidates = self._metadata_related(article_id, k=max(k * 4, 24))
+
+        aligned_graph_candidates = self._filter_aligned_candidates(
+            article_id,
+            graph_candidates,
+            minimum_similarity=1.0,
+            min_keep=max(6, min(k, 10)),
+        )
 
         if mode == "gnn":
-            merged = self._merge_candidate_groups(graph_candidates, co_purchase_candidates, metadata_candidates)
+            merged = self._rank_weighted_candidates(
+                article_id,
+                weighted_groups=[
+                    (aligned_graph_candidates, 0.8),
+                    (co_purchase_candidates, 0.2),
+                ],
+                metadata_weight=0.2,
+                backfill_groups=[metadata_candidates],
+            )
         elif mode == "semantic":
-            merged = self._merge_candidate_groups(semantic_candidates, metadata_candidates)
+            merged = self._rank_weighted_candidates(
+                article_id,
+                weighted_groups=[
+                    (semantic_candidates, 0.9),
+                ],
+                metadata_weight=0.1,
+                backfill_groups=[metadata_candidates],
+            )
         else:
-            merged = self._merge_candidate_groups(
-                graph_candidates,
-                semantic_candidates,
-                co_purchase_candidates,
-                metadata_candidates,
+            merged = self._rank_weighted_candidates(
+                article_id,
+                weighted_groups=[
+                    (semantic_candidates, 0.45),
+                    (aligned_graph_candidates, 0.35),
+                    (co_purchase_candidates, 0.2),
+                ],
+                metadata_weight=0.1,
+                backfill_groups=[metadata_candidates],
             )
 
         normalized_article_id = self._normalize_article_id(article_id)
         filtered = [candidate for candidate in merged if candidate.article_id != normalized_article_id]
-        ordered = sorted(filtered, key=lambda candidate: candidate.score, reverse=True)
-        return [self._candidate_to_dict(candidate) for candidate in ordered[:k]]
+        return [self._candidate_to_dict(candidate) for candidate in filtered[:k]]
 
     def discover(self, query: str, k: int = 12, mode: str = "hybrid") -> dict[str, Any]:
         search_results = self.search(query, k=max(k, 8))

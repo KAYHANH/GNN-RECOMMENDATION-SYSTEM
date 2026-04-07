@@ -186,13 +186,19 @@ class LightGCNRecommender:
         record = matches.iloc[0].to_dict()
         return {key: value for key, value in record.items() if pd.notna(value)}
 
+    @staticmethod
+    def _cosine_scores(matrix: np.ndarray, vector: np.ndarray) -> np.ndarray:
+        matrix_norms = np.linalg.norm(matrix, axis=1) + 1e-12
+        vector_norm = float(np.linalg.norm(vector) + 1e-12)
+        return (matrix @ vector) / (matrix_norms * vector_norm)
+
     def _rank_for_user(self, customer_id: str) -> list[tuple[str, float]]:
         user_idx = self.artifacts.user_mapping.get(str(customer_id))
         if user_idx is None:
             return []
 
         user_vector = self.artifacts.user_embeddings[user_idx]
-        scores = self.artifacts.item_embeddings @ user_vector
+        scores = self._cosine_scores(self.artifacts.item_embeddings, user_vector)
         purchased = self._purchases_by_user.get(str(customer_id), set())
 
         ranked: list[tuple[str, float]] = []
@@ -226,7 +232,7 @@ class LightGCNRecommender:
             return []
 
         target_vector = self.artifacts.item_embeddings[item_idx]
-        scores = self.artifacts.item_embeddings @ target_vector
+        scores = self._cosine_scores(self.artifacts.item_embeddings, target_vector)
 
         ranked: list[RecommendationCandidate] = []
         for candidate_idx in np.argsort(-scores):
