@@ -1,3 +1,7 @@
+"use client";
+
+import { useState } from "react";
+
 export type RecommendationItem = {
   article_id: string;
   score: number;
@@ -12,6 +16,16 @@ type ProductCardProps = {
   onSelect: (item: RecommendationItem) => void;
   selected?: boolean;
 };
+
+type ProductImageProps = {
+  src: string | null;
+  alt: string;
+  fallbackLabel: string;
+  variant: "card" | "runway";
+  loading?: "lazy" | "eager";
+};
+
+const failedImageUrls = new Set<string>();
 
 export function getItemText(item: RecommendationItem, key: string, fallback: string): string {
   const value = item.metadata?.[key];
@@ -64,6 +78,46 @@ function getInitials(name: string): string {
   return initials || "HM";
 }
 
+export function ProductImage({
+  src,
+  alt,
+  fallbackLabel,
+  variant,
+  loading = "lazy"
+}: ProductImageProps) {
+  const [hasFailed, setHasFailed] = useState(() => !src || (src ? failedImageUrls.has(src) : false));
+
+  if (!src || hasFailed) {
+    if (variant === "runway") {
+      return (
+        <div className="runway-product__fallback">
+          <span>{getInitials(fallbackLabel)}</span>
+          <small>Product image unavailable</small>
+        </div>
+      );
+    }
+
+    return (
+      <div className="product-row__placeholder">
+        <span>{getInitials(fallbackLabel)}</span>
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={src}
+      alt={alt}
+      loading={loading}
+      decoding="async"
+      onError={() => {
+        failedImageUrls.add(src);
+        setHasFailed(true);
+      }}
+    />
+  );
+}
+
 export function ProductCard({ item, label, imageBaseUrl, onSelect, selected = false }: ProductCardProps) {
   const name = getItemText(item, "prod_name", item.article_id);
   const category = getItemText(item, "product_group_name", "Fashion item");
@@ -78,13 +132,7 @@ export function ProductCard({ item, label, imageBaseUrl, onSelect, selected = fa
       onClick={() => onSelect(item)}
     >
       <div className="product-row__media" aria-hidden="true">
-        {imageUrl ? (
-          <img src={imageUrl} alt={name} loading="lazy" />
-        ) : (
-          <div className="product-row__placeholder">
-            <span>{getInitials(name)}</span>
-          </div>
-        )}
+        <ProductImage src={imageUrl} alt={name} fallbackLabel={name} variant="card" />
       </div>
 
       <div className="product-row__body">

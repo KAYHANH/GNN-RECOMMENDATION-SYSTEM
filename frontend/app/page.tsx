@@ -4,6 +4,7 @@ import { startTransition, useEffect, useRef, useState, type FormEvent } from "re
 
 import {
   ProductCard,
+  ProductImage,
   type RecommendationItem,
   getItemImageUrl,
   getItemText
@@ -144,14 +145,7 @@ function RunwayProduct({
   return (
     <article className="runway-product">
       <div className="runway-product__media">
-        {imageUrl ? (
-          <img src={imageUrl} alt={name} />
-        ) : (
-          <div className="runway-product__fallback">
-            <span>{name.charAt(0).toUpperCase() || "F"}</span>
-            <small>Product image unavailable</small>
-          </div>
-        )}
+        <ProductImage src={imageUrl} alt={name} fallbackLabel={name} variant="runway" loading="eager" />
         <div className="runway-product__overlay">
           <p>{title}</p>
           <strong>{category}</strong>
