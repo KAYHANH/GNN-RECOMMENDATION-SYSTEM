@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 export type RecommendationItem = {
   article_id: string;
@@ -86,6 +86,10 @@ export function ProductImage({
   loading = "lazy"
 }: ProductImageProps) {
   const [hasFailed, setHasFailed] = useState(() => !src || (src ? failedImageUrls.has(src) : false));
+
+  useEffect(() => {
+    setHasFailed(!src || (src ? failedImageUrls.has(src) : false));
+  }, [src]);
 
   if (!src || hasFailed) {
     if (variant === "runway") {
