@@ -1,4 +1,7 @@
 -r requirements.txt
+faiss-cpu>=1.8,<2.0
+scikit-learn>=1.5,<2.0
+scipy>=1.14,<2.0
 torch>=2.3,<3.0
 torch-geometric>=2.6,<3.0
 sentence-transformers>=3.0,<4.0

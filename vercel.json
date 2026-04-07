@@ -3,37 +3,7 @@
   "functions": {
     "api/index.py": {
       "memory": 1024,
-      "maxDuration": 60,
-      "includeFiles": [
-        "api/**/*.py",
-        "models/**/*.py",
-        "data/articles_cleaned.csv",
-        "data/transactions_cleaned.csv",
-        "artifacts/article_ids.csv",
-        "artifacts/item_embeddings.npy",
-        "artifacts/item_mapping.json",
-        "artifacts/semantic_backend.json",
-        "artifacts/semantic_faiss_index.bin",
-        "artifacts/semantic_projector.pkl",
-        "artifacts/semantic_vectorizer.pkl",
-        "artifacts/user_embeddings.npy",
-        "artifacts/user_mapping.json"
-      ],
-      "excludeFiles": [
-        "frontend/**",
-        "tests/**",
-        "training/**",
-        "mlops/**",
-        "paper/**",
-        "data/raw/**",
-        "data/full_*.csv",
-        "artifacts/runtime/**",
-        "artifacts/retrain_check/**",
-        "artifacts/retrain_check2/**",
-        "artifacts/vercel-api-stage/**",
-        "**/__pycache__/**",
-        "**/*.pyc"
-      ]
+      "maxDuration": 300
     }
   },
   "rewrites": [

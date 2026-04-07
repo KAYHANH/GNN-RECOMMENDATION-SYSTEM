@@ -31,3 +31,5 @@ data/*
 mlruns/
 metrics.json
 frontend/.env.local
+
+.vercel

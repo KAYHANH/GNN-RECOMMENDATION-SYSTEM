@@ -345,8 +345,8 @@ NEXT_PUBLIC_API_BASE_URL=https://<your-backend-project>.vercel.app
 ### What this gives you
 
 - the same search UI you have locally
-- live semantic search over the cleaned H&M catalog
 - live graph-backed related products from the saved LightGCN artifacts
+- lightweight catalog-text search on serverless deployments when the heavier FAISS and scikit-learn stack is not installed
 - public product images through the image fallback feed
 - a shareable frontend URL for demos
 

@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 import json
 import pickle
+import re
 
 import numpy as np
 import pandas as pd
@@ -59,6 +60,7 @@ class SemanticEngine:
 
         if self.articles_df is not None and "article_id" in self.articles_df.columns:
             self.articles_df["article_id"] = self.articles_df["article_id"].astype(str).str.zfill(10)
+        self.catalog_index = self._build_catalog_index(self.articles_df)
 
     @classmethod
     def from_artifacts(
@@ -69,14 +71,9 @@ class SemanticEngine:
         articles_path: str | Path | None = None,
         model_name: str = "all-MiniLM-L6-v2",
     ) -> "SemanticEngine":
-        if faiss is None:
-            raise ImportError("faiss-cpu is required to load semantic search artifacts.")
-
         index_path = Path(index_path)
         article_ids_path = Path(article_ids_path)
         artifact_dir = index_path.parent
-
-        index = faiss.read_index(str(index_path))
 
         if str(article_ids_path).lower().endswith(".csv"):
             article_ids = pd.read_csv(article_ids_path, dtype={"article_id": str})["article_id"].astype(str).tolist()
@@ -96,9 +93,26 @@ class SemanticEngine:
         elif (artifact_dir / SEMANTIC_VECTORIZER_ARTIFACT).exists():
             backend = "tfidf-svd"
 
+        if faiss is None:
+            return cls(
+                model_name=resolved_model_name,
+                backend="catalog-lexical",
+                article_ids=article_ids,
+                articles_df=articles_df,
+            )
+
+        index = faiss.read_index(str(index_path))
+
         vectorizer = None
         projector = None
         if backend == "tfidf-svd":
+            if TfidfVectorizer is None:
+                return cls(
+                    model_name=resolved_model_name,
+                    backend="catalog-lexical",
+                    article_ids=article_ids,
+                    articles_df=articles_df,
+                )
             with open(artifact_dir / SEMANTIC_VECTORIZER_ARTIFACT, "rb") as handle:
                 vectorizer = pickle.load(handle)
 
@@ -116,6 +130,41 @@ class SemanticEngine:
             vectorizer=vectorizer,
             projector=projector,
         )
+
+    @staticmethod
+    def _tokenize(text: str) -> set[str]:
+        return set(re.findall(r"[a-z0-9]+", text.lower()))
+
+    @classmethod
+    def _article_text(cls, row: dict[str, Any]) -> str:
+        fields = [
+            row.get("prod_name", ""),
+            row.get("product_type_name", ""),
+            row.get("product_group_name", ""),
+            row.get("department_name", ""),
+            row.get("section_name", ""),
+            row.get("colour_group_name", ""),
+            row.get("detail_desc", ""),
+        ]
+        return ". ".join(str(field).strip() for field in fields if str(field).strip())
+
+    @classmethod
+    def _build_catalog_index(cls, articles_df: pd.DataFrame | None) -> list[dict[str, Any]]:
+        if articles_df is None or articles_df.empty:
+            return []
+
+        records: list[dict[str, Any]] = []
+        for row in articles_df.to_dict(orient="records"):
+            article_id = str(row.get("article_id", "")).zfill(10)
+            text = cls._article_text(row).lower()
+            records.append(
+                {
+                    "article_id": article_id,
+                    "text": text,
+                    "tokens": cls._tokenize(text),
+                }
+            )
+        return records
 
     def _get_model(self) -> Any:
         if self.backend != "sentence-transformer":
@@ -146,6 +195,8 @@ class SemanticEngine:
         return self._normalize_embeddings(embeddings)
 
     def encode(self, texts: list[str]) -> np.ndarray:
+        if self.backend == "catalog-lexical":
+            raise ValueError("Catalog lexical backend does not expose dense embeddings.")
         if self.backend == "tfidf-svd":
             return self._encode_tfidf(texts)
         return self._encode_sentence_transformer(texts)
@@ -213,6 +264,7 @@ class SemanticEngine:
         self.index = index
         self.article_ids = frame[article_id_column].tolist()
         self.articles_df = frame
+        self.catalog_index = self._build_catalog_index(frame)
 
     def _metadata_for_article(self, article_id: str) -> dict[str, Any]:
         if self.articles_df is None:
@@ -222,7 +274,51 @@ class SemanticEngine:
             return {}
         return {key: value for key, value in rows.iloc[0].to_dict().items() if pd.notna(value)}
 
+    def _catalog_search(self, query: str, *, k: int = 12) -> list[RecommendationCandidate]:
+        if not self.catalog_index:
+            return []
+
+        normalized_query = query.strip().lower()
+        query_tokens = self._tokenize(normalized_query)
+        if not normalized_query or not query_tokens:
+            return []
+
+        query_token_count = max(len(query_tokens), 1)
+        results: list[RecommendationCandidate] = []
+
+        for record in self.catalog_index:
+            overlap = len(query_tokens & record["tokens"])
+            contains_phrase = normalized_query in record["text"]
+            if overlap == 0 and not contains_phrase:
+                continue
+
+            metadata = self._metadata_for_article(record["article_id"])
+            prod_name = str(metadata.get("prod_name", "")).strip().lower()
+
+            score = overlap / query_token_count
+            if contains_phrase:
+                score += 0.75
+            if prod_name and normalized_query == prod_name:
+                score += 1.25
+            elif prod_name and normalized_query in prod_name:
+                score += 0.5
+
+            results.append(
+                RecommendationCandidate(
+                    article_id=record["article_id"],
+                    score=float(score),
+                    source="semantic",
+                    metadata=metadata,
+                    features={"semantic_similarity_score": float(score)},
+                )
+            )
+
+        results.sort(key=lambda candidate: candidate.score, reverse=True)
+        return results[:k]
+
     def search(self, query: str, *, k: int = 12) -> list[RecommendationCandidate]:
+        if self.backend == "catalog-lexical":
+            return self._catalog_search(query, k=k)
         if self.index is None:
             return []
 
